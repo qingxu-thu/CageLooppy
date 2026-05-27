@@ -12,6 +12,35 @@ Before running the main interfaces of CagingLoop, you need to add Full Path of t
 3. run detectSaddlePoint.m to detect the saddle points
 4. run generateCagingGrasp.m to generate a caging loop connecting source point and saddle point
 
+## Python Port
+
+The Python implementation lives in `cagingloop/` and mirrors the MATLAB workflow without requiring MATLAB, MEX files, or `FastRBF.exe`. It uses Python-native numerical libraries, so outputs are intended to be workflow-equivalent rather than point-for-point identical to the MATLAB version.
+
+Install for development:
+
+```powershell
+python -m pip install -e ".[dev]"
+```
+
+Run tests:
+
+```powershell
+python -m pytest
+```
+
+Run the synthetic example:
+
+```powershell
+python examples/run_pipeline.py
+```
+
+The primary Python workflow functions are:
+
+1. `point_cloud_voxelization_by_rbf`
+2. `distance_map_by_fast_marching`
+3. `detect_saddle_point`
+4. `generate_caging_grasp`
+
 ## Citation
 If you use this code, please cite the following paper.
 ```
