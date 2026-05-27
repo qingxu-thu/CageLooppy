@@ -4,6 +4,7 @@ from cagingloop.distance import (
     compute_shortestpath,
     distance_map_by_fast_marching,
 )
+from cagingloop.grasp import generateCagingGrasp, generate_caging_grasp, get_cage_points, smooth_closed_path
 from cagingloop.nearest import NearestTree, nn_prepare, nn_search
 from cagingloop.saddle import (
     calculate_iter_num,
@@ -28,8 +29,12 @@ __all__ = [
     "detect_saddle_point",
     "distance_map_by_fast_marching",
     "diversity_eval",
+    "generateCagingGrasp",
+    "generate_caging_grasp",
+    "get_cage_points",
     "nn_prepare",
     "nn_search",
     "pointCloudVoxelizationByRBF",
     "point_cloud_voxelization_by_rbf",
+    "smooth_closed_path",
 ]
