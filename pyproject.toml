@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cagingloop"
+version = "0.1.0"
+description = "Python port of CagingLoop MATLAB interfaces"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+fmm = ["scikit-fmm>=2023.4.2"]
+plot = ["matplotlib>=3.7"]
+mesh = ["scikit-image>=0.21"]
+dev = ["pytest>=7.4"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+testpaths = ["tests"]
+pythonpath = ["."]
