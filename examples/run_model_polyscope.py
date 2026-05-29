@@ -20,7 +20,14 @@ from cagingloop import (
 from cagingloop.polyscope_visualization import show_pipeline_polyscope
 
 
-def run_model(path: Path, *, voxel_count: int, max_points: int | None, source_point_id: int):
+def run_model(
+    path: Path,
+    *,
+    voxel_count: int,
+    max_points: int | None,
+    source_point_id: int,
+    normal_offset: float,
+):
     points, normals, _ = load_obj_point_cloud(path, max_points=max_points)
     voxels = point_cloud_voxelization_by_rbf(
         points,
@@ -30,6 +37,7 @@ def run_model(path: Path, *, voxel_count: int, max_points: int | None, source_po
         voxel_count,
         rbf_neighbors=min(64, len(points)),
         smoothing=1e-8,
+        normal_offset=normal_offset,
     )
     if len(voxels.grid_on) == 0:
         raise ValueError("voxelization produced no surface points")
@@ -58,6 +66,7 @@ def main() -> None:
     parser.add_argument("--voxel-count", type=int, default=17)
     parser.add_argument("--max-points", type=int, default=1200)
     parser.add_argument("--source-point-id", type=int, default=0)
+    parser.add_argument("--normal-offset", type=float, default=1e-4)
     parser.add_argument("--no-show", action="store_true", help="Build and register data without opening the UI.")
     args = parser.parse_args()
 
@@ -67,9 +76,11 @@ def main() -> None:
         voxel_count=args.voxel_count,
         max_points=args.max_points,
         source_point_id=args.source_point_id,
+        normal_offset=args.normal_offset,
     )
     print(f"model: {model_path}")
     print(f"input points: {len(points)}")
+    print(f"normal offset: {args.normal_offset}")
     print(f"surface points: {len(voxels.grid_on)}")
     print(f"inner voxels: {len(voxels.grids_inner)}")
     print(f"outer voxels: {len(voxels.grids_outer)}")

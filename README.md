@@ -50,13 +50,13 @@ python examples/run_pipeline_polyscope.py --no-show
 Run `Models/knotty.obj` in Polyscope:
 
 ```powershell
-python examples/run_model_polyscope.py Models\knotty.obj --voxel-count 17 --max-points 1200
+python examples/run_model_polyscope.py Models\knotty.obj --voxel-count 17 --max-points 1200 --normal-offset 0.0001
 ```
 
 Use `--no-show` for a dry run:
 
 ```powershell
-python examples/run_model_polyscope.py Models\knotty.obj --voxel-count 17 --max-points 1200 --no-show
+python examples/run_model_polyscope.py Models\knotty.obj --voxel-count 17 --max-points 1200 --normal-offset 0.0001 --no-show
 ```
 
 The primary Python workflow functions are:

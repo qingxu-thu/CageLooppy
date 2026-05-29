@@ -34,6 +34,29 @@ def test_distance_map_fallback_handles_simple_line():
     assert result.dismap[-1] > result.dismap[1]
 
 
+def test_distance_map_traverses_outer_and_surface_but_not_inner():
+    grid = np.array([[[1], [-1], [0]]], dtype=int)
+    voxels = VoxelizationResult(
+        output_grid=grid,
+        grid_x=np.array([0.0]),
+        grid_y=np.arange(3, dtype=float),
+        grid_z=np.array([0.0]),
+        index=GridIndex(
+            on_index=np.array([[0, 0, 0]], dtype=int),
+            inner_index=np.array([[0, 2, 0]], dtype=int),
+            outer_index=np.array([[0, 1, 0]], dtype=int),
+        ),
+        grid_on=np.array([[0.0, 0.0, 0.0]]),
+        grids_inner=np.array([[0.0, 2.0, 0.0]]),
+        grids_outer=np.array([[0.0, 1.0, 0.0]]),
+    )
+
+    result = distance_map_by_fast_marching(voxels, start_point_id=0, prefer_fmm=False)
+
+    assert np.isfinite(result.distance_grid[0, 1, 0])
+    assert not np.isfinite(result.distance_grid[0, 2, 0])
+
+
 def test_compute_shortest_path_returns_xyz_path_to_source():
     voxels = _line_voxelization()
     distance = distance_map_by_fast_marching(voxels, start_point_id=0, prefer_fmm=False)

@@ -118,7 +118,7 @@ def distance_map_by_fast_marching(
 ) -> DistanceMapResult:
     _validate_surface_id(voxelization, start_point_id, "start_point_id")
     source = tuple(int(v) for v in voxelization.index.on_index[start_point_id])
-    traversable = voxelization.output_grid >= 0
+    traversable = voxelization.output_grid != 0
     spacing = _spacing(voxelization)
 
     if prefer_fmm:
