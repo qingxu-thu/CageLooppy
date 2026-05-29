@@ -34,6 +34,19 @@ Run the synthetic example:
 python examples/run_pipeline.py
 ```
 
+Run the same synthetic pipeline in Polyscope:
+
+```powershell
+python -m pip install -e ".[polyscope]"
+python examples/run_pipeline_polyscope.py
+```
+
+For a non-interactive smoke test without opening the Polyscope window:
+
+```powershell
+python examples/run_pipeline_polyscope.py --no-show
+```
+
 The primary Python workflow functions are:
 
 1. `point_cloud_voxelization_by_rbf`

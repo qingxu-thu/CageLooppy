@@ -6,6 +6,7 @@ from cagingloop.distance import (
 )
 from cagingloop.grasp import generateCagingGrasp, generate_caging_grasp, get_cage_points, smooth_closed_path
 from cagingloop.nearest import NearestTree, nn_prepare, nn_search
+from cagingloop.polyscope_visualization import register_pipeline_polyscope, show_pipeline_polyscope
 from cagingloop.saddle import (
     calculate_iter_num,
     detectSaddlePoint,
@@ -36,5 +37,7 @@ __all__ = [
     "nn_search",
     "pointCloudVoxelizationByRBF",
     "point_cloud_voxelization_by_rbf",
+    "register_pipeline_polyscope",
+    "show_pipeline_polyscope",
     "smooth_closed_path",
 ]

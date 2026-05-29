@@ -80,7 +80,7 @@ def _point_in_polygon_strict(point: np.ndarray, polygon: np.ndarray, tol: float 
         x2, y2 = polygon[(i + 1) % n]
         edge = np.array([x2 - x1, y2 - y1])
         to_point = np.array([x - x1, y - y1])
-        cross = abs(float(np.cross(edge, to_point)))
+        cross = abs(float(edge[0] * to_point[1] - edge[1] * to_point[0]))
         dot = float(np.dot(to_point, edge))
         if cross <= tol and 0.0 <= dot <= float(np.dot(edge, edge)):
             return False

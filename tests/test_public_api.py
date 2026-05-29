@@ -11,6 +11,7 @@ def test_public_api_exports_main_workflow_functions():
         "distance_map_by_fast_marching",
         "detect_saddle_point",
         "generate_caging_grasp",
+        "show_pipeline_polyscope",
     ]:
         assert hasattr(cagingloop, name)
 

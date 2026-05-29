@@ -16,6 +16,7 @@ dependencies = [
 fmm = ["scikit-fmm>=2023.4.2"]
 plot = ["matplotlib>=3.7"]
 mesh = ["scikit-image>=0.21"]
+polyscope = ["polyscope>=2.3"]
 dev = ["pytest>=7.4"]
 
 [tool.pytest.ini_options]
