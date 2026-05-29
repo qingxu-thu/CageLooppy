@@ -5,6 +5,7 @@ from cagingloop.distance import (
     distance_map_by_fast_marching,
 )
 from cagingloop.grasp import generateCagingGrasp, generate_caging_grasp, get_cage_points, smooth_closed_path
+from cagingloop.model_io import compute_vertex_normals, load_obj_mesh, load_obj_point_cloud
 from cagingloop.nearest import NearestTree, nn_prepare, nn_search
 from cagingloop.polyscope_visualization import register_pipeline_polyscope, show_pipeline_polyscope
 from cagingloop.saddle import (
@@ -33,6 +34,9 @@ __all__ = [
     "generateCagingGrasp",
     "generate_caging_grasp",
     "get_cage_points",
+    "compute_vertex_normals",
+    "load_obj_mesh",
+    "load_obj_point_cloud",
     "nn_prepare",
     "nn_search",
     "pointCloudVoxelizationByRBF",

@@ -47,6 +47,18 @@ For a non-interactive smoke test without opening the Polyscope window:
 python examples/run_pipeline_polyscope.py --no-show
 ```
 
+Run `Models/knotty.obj` in Polyscope:
+
+```powershell
+python examples/run_model_polyscope.py Models\knotty.obj --voxel-count 17 --max-points 1200
+```
+
+Use `--no-show` for a dry run:
+
+```powershell
+python examples/run_model_polyscope.py Models\knotty.obj --voxel-count 17 --max-points 1200 --no-show
+```
+
 The primary Python workflow functions are:
 
 1. `point_cloud_voxelization_by_rbf`
