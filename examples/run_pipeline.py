@@ -59,7 +59,7 @@ def main() -> None:
         return
 
     source_point_id = 0
-    distance = distance_map_by_fast_marching(voxels, source_point_id, prefer_fmm=False)
+    distance = distance_map_by_fast_marching(voxels, source_point_id, prefer_fmm=True)
     saddles = detect_saddle_point(distance.dismap, voxels.grid_on, source_point_id, surface_normals(voxels.grid_on))
     print(f"saddle candidates: {len(saddles)}")
 

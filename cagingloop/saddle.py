@@ -26,7 +26,10 @@ def diversity_eval(p1: np.ndarray, p2: np.ndarray, normal1: np.ndarray, normal2:
     n2 = _normalize(np.asarray(normal2, dtype=float), "normal2")
     angle1 = np.arccos(np.clip(np.dot(-n1, d), -1.0, 1.0))
     angle2 = np.arccos(np.clip(np.dot(n2, d), -1.0, 1.0))
-    return float(np.exp(-0.5 * max(angle1, angle2) ** 4))
+    # MATLAB: exp(-0.5 * pow2(max(angle1, angle2), 4)). pow2(F, E) is F * 2^E,
+    # so pow2(x, 4) == 16 * x (NOT x ** 4), giving exp(-8 * max_angle).
+    max_angle = max(angle1, angle2)
+    return float(np.exp(-0.5 * (max_angle * 2.0**4)))
 
 
 def _local_frame(grid_on: np.ndarray, point_id: int, frame_k: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -37,7 +40,11 @@ def _local_frame(grid_on: np.ndarray, point_id: int, frame_k: int) -> tuple[np.n
     if len(neighbor_ids) < 2:
         raise ValueError("not enough neighbors to estimate a local frame")
     offsets = grid_on[neighbor_ids] - grid_on[point_id]
-    _, _, vh = np.linalg.svd(offsets, full_matrices=False)
+    # MATLAB's pca(X', 3) centers the neighbour offsets by their mean before
+    # extracting principal axes (it returns the mean as its 4th output). Match
+    # that by centering here rather than running SVD on the raw offsets.
+    centered = offsets - offsets.mean(axis=0)
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
     u_direct = vh[0]
     v_direct = vh[1] if len(vh) > 1 else np.array([0.0, 1.0, 0.0])
     n_direct = vh[2] if len(vh) > 2 else np.cross(u_direct, v_direct)
@@ -92,6 +99,14 @@ def _point_in_polygon_strict(point: np.ndarray, polygon: np.ndarray, tol: float 
     return inside
 
 
+# MATLAB hard-codes the dis_toler cutoff at 50, which is the directional gradient
+# of the distance field and is therefore SCALE-DEPENDENT: on models normalized to a
+# unit box at coarse resolution the gradient medians ~20, so 50 deletes every
+# boundary point and no saddle is ever found (verified against MATLAB). We make the
+# cutoff relative to each point's own gradient magnitude instead.
+FILTER_TOLERANCE_FACTOR = 0.1
+
+
 def _filter_boundary(boundary_points: np.ndarray, boundary_order: np.ndarray, judge: np.ndarray) -> np.ndarray:
     if len(boundary_order) < 3:
         return boundary_order
@@ -105,8 +120,14 @@ def _filter_boundary(boundary_points: np.ndarray, boundary_order: np.ndarray, ju
 
     norms = np.linalg.norm(points, axis=1)
     norms[norms == 0.0] = 1.0
-    dis_toler = values / norms
-    delete_small = np.where(np.abs(dis_toler) <= 50.0)[0]
+    dis_toler = np.abs(values / norms)
+    # Scale-relative replacement for MATLAB's `abs(dis_toler) <= 50`: delete only
+    # the genuinely FLAT directions (small gradient relative to this point's own
+    # steepest direction). A uniform-gradient saddle keeps all directions, as it
+    # must; near-flat noise directions are dropped.
+    peak = float(np.max(dis_toler))
+    tolerance = FILTER_TOLERANCE_FACTOR * peak if peak > 0.0 else 0.0
+    delete_small = np.where(dis_toler < tolerance)[0]
 
     a = points[:-1]
     b = points[1:]
@@ -115,8 +136,7 @@ def _filter_boundary(boundary_points: np.ndarray, boundary_order: np.ndarray, ju
     angles = np.degrees(np.arccos(np.clip(np.sum(a * b, axis=1) / denom, -1.0, 1.0)))
     delete_angle = np.where(angles <= 15.0)[0] + 1
     delete = np.unique(np.concatenate((delete_small, delete_angle))).astype(int)
-    if len(order) - len(delete) < 3:
-        return boundary_order
+    # No revert-to-full-boundary guard here: MATLAB has none, so we match it.
     return np.delete(order, delete)
 
 
@@ -156,6 +176,7 @@ def detect_saddle_point(
     grid_on_normals: np.ndarray,
     *,
     k: int = 9,
+    keep: int | None = None,
 ) -> np.ndarray:
     dismap = np.asarray(dismap, dtype=float)
     grid_on = _as_xyz_array(grid_on, "grid_on")
@@ -181,8 +202,14 @@ def detect_saddle_point(
         dtype=float,
     )
     order = np.argsort(scores)[::-1]
-    keep = max(1, int(round(len(scores) / 30.0)))
-    return np.array(candidates, dtype=int)[order[:keep]]
+    # MATLAB keeps round(n/30) of the diversity-ranked candidates. `keep` lets a
+    # caller widen that (e.g. to evaluate every candidate's caging loop) while the
+    # default reproduces the MATLAB selection.
+    if keep is None:
+        n_keep = max(1, int(round(len(scores) / 30.0)))
+    else:
+        n_keep = max(1, min(int(keep), len(scores)))
+    return np.array(candidates, dtype=int)[order[:n_keep]]
 
 
 detectSaddlePoint = detect_saddle_point

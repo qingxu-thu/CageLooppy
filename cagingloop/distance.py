@@ -140,27 +140,30 @@ def _index_to_xyz(index: tuple[int, int, int], voxelization: VoxelizationResult)
     return np.array([voxelization.grid_x[x], voxelization.grid_y[y], voxelization.grid_z[z]], dtype=float)
 
 
-def compute_shortest_path(
+def _voxel_to_world(positions: np.ndarray, voxelization: VoxelizationResult) -> np.ndarray:
+    """Map continuous voxel-index positions (N x 3) to world XYZ coordinates."""
+
+    def axis_origin_spacing(axis: np.ndarray) -> tuple[float, float]:
+        origin = float(axis[0])
+        spacing = float(axis[1] - axis[0]) if len(axis) > 1 else 1.0
+        return origin, spacing
+
+    ox, sx = axis_origin_spacing(voxelization.grid_x)
+    oy, sy = axis_origin_spacing(voxelization.grid_y)
+    oz, sz = axis_origin_spacing(voxelization.grid_z)
+    positions = np.atleast_2d(np.asarray(positions, dtype=float))
+    origin = np.array([ox, oy, oz])
+    spacing = np.array([sx, sy, sz])
+    return origin + positions * spacing
+
+
+def _greedy_descent_indices(
     distance_grid: np.ndarray,
-    voxelization: VoxelizationResult,
-    start_point_id: int,
-    source_point_id: int,
-    *,
-    connectivity: int = 6,
-) -> np.ndarray:
-    if connectivity != 6:
-        raise ValueError("only 6-connectivity is supported")
-    _validate_surface_id(voxelization, start_point_id, "start_point_id")
-    _validate_surface_id(voxelization, source_point_id, "source_point_id")
-
-    source = tuple(int(v) for v in voxelization.index.on_index[source_point_id])
-    current = tuple(int(v) for v in voxelization.index.on_index[start_point_id])
-    distance_grid = np.asarray(distance_grid, dtype=float)
-    if distance_grid.shape != voxelization.output_grid.shape:
-        raise ValueError("distance_grid shape must match output_grid")
-    if not np.isfinite(distance_grid[current]):
-        raise ValueError("start point is not reachable")
-
+    start: tuple[int, int, int],
+    source: tuple[int, int, int],
+) -> list[tuple[int, int, int]]:
+    """Integer-voxel steepest descent over 6-neighbors (fallback for thin grids)."""
+    current = start
     path_indices = [current]
     visited = {current}
     max_steps = int(np.prod(distance_grid.shape))
@@ -184,7 +187,103 @@ def compute_shortest_path(
         visited.add(current)
     else:
         raise ValueError("shortest path exceeded grid size")
+    return path_indices
 
+
+def _gradient_descent_path(
+    distance_grid: np.ndarray,
+    start: tuple[int, int, int],
+    source: tuple[int, int, int],
+    *,
+    step: float = 0.5,
+) -> np.ndarray | None:
+    """Continuous sub-voxel descent down the distance field.
+
+    Mirrors the Fast-Marching-toolbox ``shortestpath``: trace a streamline along
+    ``-grad(D)`` from ``start`` to the ``source`` minimum, producing a smooth
+    sub-voxel path instead of a blocky voxel-stepped one. Returns ``None`` if the
+    descent stalls (e.g. on a 1-voxel-thin structure), so the caller can fall
+    back to the integer descent.
+    """
+    from scipy.interpolate import RegularGridInterpolator
+
+    shape = distance_grid.shape
+    if min(shape) < 2:
+        return None
+
+    # Fill blocked/unreachable cells with a high plateau so the streamline is
+    # pushed away from the object interior rather than into it.
+    finite = np.isfinite(distance_grid)
+    if not finite.any():
+        return None
+    fill_value = float(distance_grid[finite].max()) + 1.0
+    filled = np.where(finite, distance_grid, fill_value)
+
+    axes = tuple(np.arange(n, dtype=float) for n in shape)
+    gx, gy, gz = np.gradient(filled)
+    interp_kwargs = {"bounds_error": False, "fill_value": None}
+    grad_interp = [
+        RegularGridInterpolator(axes, gx, **interp_kwargs),
+        RegularGridInterpolator(axes, gy, **interp_kwargs),
+        RegularGridInterpolator(axes, gz, **interp_kwargs),
+    ]
+    upper = np.array([n - 1 for n in shape], dtype=float)
+
+    pos = np.array(start, dtype=float)
+    source_pos = np.array(source, dtype=float)
+    positions = [pos.copy()]
+    max_iter = int(8 * sum(shape)) + 100
+    reached = False
+    for _ in range(max_iter):
+        if np.linalg.norm(pos - source_pos) <= 1.0:
+            reached = True
+            break
+        query = np.clip(pos, 0.0, upper)
+        grad = np.array([float(g(query)[0]) for g in grad_interp])
+        norm = float(np.linalg.norm(grad))
+        if not np.isfinite(norm) or norm < 1e-9:
+            return None
+        pos = np.clip(pos - step * grad / norm, 0.0, upper)
+        if not np.all(np.isfinite(pos)):
+            return None
+        positions.append(pos.copy())
+    if not reached:
+        return None
+
+    positions.append(source_pos.copy())
+    return np.vstack(positions)
+
+
+def compute_shortest_path(
+    distance_grid: np.ndarray,
+    voxelization: VoxelizationResult,
+    start_point_id: int,
+    source_point_id: int,
+    *,
+    connectivity: int = 6,
+) -> np.ndarray:
+    if connectivity != 6:
+        raise ValueError("only 6-connectivity is supported")
+    _validate_surface_id(voxelization, start_point_id, "start_point_id")
+    _validate_surface_id(voxelization, source_point_id, "source_point_id")
+
+    source = tuple(int(v) for v in voxelization.index.on_index[source_point_id])
+    start = tuple(int(v) for v in voxelization.index.on_index[start_point_id])
+    distance_grid = np.asarray(distance_grid, dtype=float)
+    if distance_grid.shape != voxelization.output_grid.shape:
+        raise ValueError("distance_grid shape must match output_grid")
+    if not np.isfinite(distance_grid[start]):
+        raise ValueError("start point is not reachable")
+
+    traced = _gradient_descent_path(distance_grid, start, source)
+    if traced is not None:
+        path = _voxel_to_world(traced, voxelization)
+        # Snap the endpoints exactly onto the start and source surface points.
+        path[0] = _index_to_xyz(start, voxelization)
+        path[-1] = _index_to_xyz(source, voxelization)
+        return path
+
+    path_indices = _greedy_descent_indices(distance_grid, start, source)
     return np.vstack([_index_to_xyz(index, voxelization) for index in path_indices])
 
 

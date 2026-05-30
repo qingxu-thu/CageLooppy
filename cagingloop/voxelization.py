@@ -62,12 +62,14 @@ def _surface_mask_from_field(field: np.ndarray, threshold: float) -> np.ndarray:
 
 
 def _boundary_mask(shape: tuple[int, int, int]) -> np.ndarray:
+    # MATLAB moves only the x-min/x-max, y-min/y-max and z-max boundary inner
+    # voxels to the outer set (the z-min face `tf_z2` is commented out), so the
+    # bottom z=0 face stays classified as inner.
     mask = np.zeros(shape, dtype=bool)
     mask[0, :, :] = True
     mask[-1, :, :] = True
     mask[:, 0, :] = True
     mask[:, -1, :] = True
-    mask[:, :, 0] = True
     mask[:, :, -1] = True
     return mask
 
@@ -175,3 +177,119 @@ def point_cloud_voxelization_by_rbf(
 
 
 pointCloudVoxelizationByRBF = point_cloud_voxelization_by_rbf
+
+
+def generalized_winding_number(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    query_points: np.ndarray,
+    *,
+    chunk: int = 512,
+) -> np.ndarray:
+    """Generalized winding number of a triangle mesh at each query point.
+
+    ~1 inside a watertight mesh, ~0 outside, robust to noise. Uses the
+    Van Oosterom-Strackee solid-angle formula summed over faces.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    faces = np.asarray(faces, dtype=int)
+    query_points = np.atleast_2d(np.asarray(query_points, dtype=float))
+    tri = vertices[faces]
+    a0, b0, c0 = tri[:, 0], tri[:, 1], tri[:, 2]
+    out = np.empty(len(query_points), dtype=float)
+    for start in range(0, len(query_points), chunk):
+        p = query_points[start : start + chunk][:, None, :]
+        a = a0[None] - p
+        b = b0[None] - p
+        c = c0[None] - p
+        la = np.linalg.norm(a, axis=2)
+        lb = np.linalg.norm(b, axis=2)
+        lc = np.linalg.norm(c, axis=2)
+        num = np.einsum("nmi,nmi->nm", a, np.cross(b, c))
+        den = (
+            la * lb * lc
+            + np.einsum("nmi,nmi->nm", a, b) * lc
+            + np.einsum("nmi,nmi->nm", b, c) * la
+            + np.einsum("nmi,nmi->nm", c, a) * lb
+        )
+        out[start : start + chunk] = np.arctan2(num, den).sum(axis=1) / (2.0 * np.pi)
+    return out
+
+
+def _surface_mask_from_inside(inside: np.ndarray) -> np.ndarray:
+    """Voxels straddling the inside/outside interface (a thin shell on both sides)."""
+    surface = np.zeros(inside.shape, dtype=bool)
+    for axis in range(3):
+        lower = [slice(None)] * 3
+        upper = [slice(None)] * 3
+        lower[axis] = slice(0, -1)
+        upper[axis] = slice(1, None)
+        boundary = inside[tuple(lower)] != inside[tuple(upper)]
+        surface[tuple(lower)] |= boundary
+        surface[tuple(upper)] |= boundary
+    return surface
+
+
+def voxelize_mesh(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    voxel_xnum: int,
+    voxel_ynum: int,
+    voxel_znum: int,
+    *,
+    padding: float = 0.2,
+    winding_chunk: int = 512,
+) -> VoxelizationResult:
+    """Voxelize a watertight triangle mesh directly (no surface reconstruction).
+
+    Classifies every grid cell inside/outside via the generalized winding number,
+    which preserves the mesh topology (handles/holes) that the RBF reconstruction
+    cannot. The grid is padded around the mesh so exterior space exists for the
+    geodesic to wrap through and so the surface is not clipped at the boundary.
+    """
+    vertices = _as_xyz_array(vertices, "vertices")
+    faces = np.asarray(faces, dtype=int)
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError("faces must be an M x 3 array")
+    _validate_voxel_counts((voxel_xnum, voxel_ynum, voxel_znum))
+    if padding < 0:
+        raise ValueError("padding must be non-negative")
+
+    mins = vertices.min(axis=0)
+    maxs = vertices.max(axis=0)
+    extent = maxs - mins
+    extent[extent == 0] = 1.0
+    lo = mins - extent * padding
+    hi = maxs + extent * padding
+    grid_x = np.linspace(lo[0], hi[0], voxel_xnum)
+    grid_y = np.linspace(lo[1], hi[1], voxel_ynum)
+    grid_z = np.linspace(lo[2], hi[2], voxel_znum)
+
+    x, y, z = np.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
+    grid_points = np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+    winding = generalized_winding_number(vertices, faces, grid_points, chunk=winding_chunk)
+    inside = (winding > 0.5).reshape((voxel_xnum, voxel_ynum, voxel_znum))
+
+    surface = _surface_mask_from_inside(inside)
+    inner = inside & ~surface
+    outer = ~inside & ~surface
+
+    output_grid = np.full(inside.shape, -1, dtype=int)
+    output_grid[inner] = 0
+    output_grid[surface] = 1
+
+    on_index = np.argwhere(surface).astype(int)
+    inner_index = np.argwhere(inner).astype(int)
+    outer_index = np.argwhere(outer).astype(int)
+
+    return VoxelizationResult(
+        output_grid=output_grid,
+        grid_x=grid_x,
+        grid_y=grid_y,
+        grid_z=grid_z,
+        index=GridIndex(on_index=on_index, inner_index=inner_index, outer_index=outer_index),
+        grid_on=_coords_from_indices(on_index, grid_x, grid_y, grid_z),
+        grids_inner=_coords_from_indices(inner_index, grid_x, grid_y, grid_z),
+        grids_outer=_coords_from_indices(outer_index, grid_x, grid_y, grid_z),
+        mesh={"verts": vertices, "faces": faces},
+    )

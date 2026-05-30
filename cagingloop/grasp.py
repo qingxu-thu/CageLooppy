@@ -30,7 +30,9 @@ def _local_frame(grid_on: np.ndarray, point_id: int, frame_k: int) -> tuple[np.n
     if len(neighbor_ids) < 2:
         return np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
     offsets = grid_on[neighbor_ids] - grid_on[point_id]
-    _, _, vh = np.linalg.svd(offsets, full_matrices=False)
+    # Match MATLAB pca(X', 3): center the neighbour offsets before extracting axes.
+    centered = offsets - offsets.mean(axis=0)
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
     u_direct = _normalize(vh[0])
     v_direct = _normalize(vh[1]) if len(vh) > 1 else np.array([0.0, 1.0, 0.0])
     return u_direct, v_direct
@@ -148,6 +150,53 @@ def generate_caging_grasp(
         path1=final_path[: len(path1)],
         path2=final_path[len(path1) - 1 :],
     )
+
+
+def loop_enclosed_area(path: np.ndarray) -> float:
+    """Approximate area enclosed by a closed 3D loop (degenerate slivers ~ 0)."""
+    path = _as_path(path)
+    if len(path) < 3:
+        return 0.0
+    centroid = path.mean(axis=0)
+    spokes = path - centroid
+    cross = np.cross(spokes[:-1], spokes[1:])
+    return float(np.linalg.norm(cross.sum(axis=0)) * 0.5)
+
+
+def generate_best_caging_grasp(
+    distance_grid: np.ndarray,
+    voxelization: VoxelizationResult,
+    source_point_id: int,
+    dismap: np.ndarray,
+    saddle_point_ids: np.ndarray,
+    *,
+    k: int = 9,
+) -> tuple[CagingPath, int]:
+    """Generate a caging loop for each candidate saddle and return the best one.
+
+    `detect_saddle_point` ranks saddles by MATLAB's `diversityEval`, which does not
+    correlate with how well the resulting loop wraps the object — the top-ranked
+    saddle often yields a degenerate sliver where both paths follow the same
+    geodesic. This evaluates each candidate's actual loop and keeps the one that
+    encloses the most area (a genuine wrapping loop), returning it with its
+    saddle id.
+    """
+    best: CagingPath | None = None
+    best_saddle = -1
+    best_area = -1.0
+    for saddle_id in np.asarray(saddle_point_ids, dtype=int).tolist():
+        try:
+            caging = generate_caging_grasp(distance_grid, voxelization, source_point_id, dismap, saddle_id, k=k)
+        except ValueError:
+            continue
+        area = loop_enclosed_area(caging.final_path)
+        if area > best_area:
+            best_area = area
+            best = caging
+            best_saddle = saddle_id
+    if best is None:
+        raise ValueError("no caging loop could be generated from the given saddle candidates")
+    return best, best_saddle
 
 
 generateCagingGrasp = generate_caging_grasp

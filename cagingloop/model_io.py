@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 
 def _parse_face_vertex(token: str) -> int:
@@ -59,6 +60,37 @@ def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarra
     normals = normals / lengths[:, None]
     normals[zero] = fallback[zero]
     return normals
+
+
+def transfer_point_normals(
+    source_points: np.ndarray,
+    source_normals: np.ndarray,
+    query_points: np.ndarray,
+) -> np.ndarray:
+    """Assign each query point the normal of its nearest source point.
+
+    The MATLAB pipeline feeds true surface normals (`grid_on_normals`) into
+    `detectSaddlePoint`. The voxelization grid points do not carry normals, so
+    we recover them by transferring each input cloud normal to the nearest
+    surface voxel, rather than approximating with radial directions.
+    """
+    source_points = np.asarray(source_points, dtype=float)
+    source_normals = np.asarray(source_normals, dtype=float)
+    query_points = np.asarray(query_points, dtype=float)
+    if source_points.ndim != 2 or source_points.shape[1] != 3:
+        raise ValueError("source_points must be an N x 3 array")
+    if source_normals.shape != source_points.shape:
+        raise ValueError("source_normals must have the same shape as source_points")
+    if query_points.ndim != 2 or query_points.shape[1] != 3:
+        raise ValueError("query_points must be an M x 3 array")
+    if len(query_points) == 0:
+        return np.zeros((0, 3), dtype=float)
+
+    _, nearest = cKDTree(source_points).query(query_points, k=1)
+    normals = source_normals[nearest]
+    lengths = np.linalg.norm(normals, axis=1)
+    lengths[lengths == 0.0] = 1.0
+    return normals / lengths[:, None]
 
 
 def load_obj_point_cloud(path: str | Path, *, max_points: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
