@@ -132,6 +132,7 @@ def generate_caging_grasp(
     saddle_point_id: int,
     *,
     k: int = 9,
+    integrator: str = "euler",
 ) -> CagingPath:
     if source_point_id < 0 or source_point_id >= len(voxelization.grid_on):
         raise ValueError("source_point_id is outside grid_on")
@@ -139,8 +140,8 @@ def generate_caging_grasp(
         raise ValueError("saddle_point_id is outside grid_on")
 
     cage_point_ids = get_cage_points(dismap, voxelization.grid_on, saddle_point_id, k=k)
-    path1 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[0]), source_point_id)
-    path2 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[1]), source_point_id)
+    path1 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[0]), source_point_id, integrator=integrator)
+    path2 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[1]), source_point_id, integrator=integrator)
 
     saddle = voxelization.grid_on[saddle_point_id : saddle_point_id + 1]
     path1 = np.vstack((saddle, path1))
@@ -197,6 +198,7 @@ def generate_caging_grasps(
     k: int = 9,
     max_loops: int = 10,
     min_separation_ratio: float = 0.02,
+    integrator: str = "euler",
 ) -> list[CagingCandidate]:
     """Generate a caging loop per candidate saddle and return the top `max_loops`.
 
@@ -212,7 +214,7 @@ def generate_caging_grasps(
     candidates: list[CagingCandidate] = []
     for saddle_id in np.asarray(saddle_point_ids, dtype=int).tolist():
         try:
-            caging = generate_caging_grasp(distance_grid, voxelization, source_point_id, dismap, saddle_id, k=k)
+            caging = generate_caging_grasp(distance_grid, voxelization, source_point_id, dismap, saddle_id, k=k, integrator=integrator)
         except ValueError:
             continue
         separation = _path_separation(caging)
@@ -246,53 +248,6 @@ def generate_best_caging_grasp(
     return best.path, best.saddle_id
 
 
-def horizontal_slice_loop(
-    voxelization: VoxelizationResult,
-    height: float,
-    *,
-    up_axis: int = 1,
-    margin: float = 0.0,
-) -> CagingPath:
-    """Caging loop as a horizontal ring encircling the solid at a given height.
-
-    Unlike the saddle-based loops (which, at a flaring neck, come out vertical), this
-    directly takes the object's cross-section at `height` (world units along `up_axis`)
-    and traces the convex ring around it — a clean, horizontal loop at exactly the
-    requested height, matching a hand-drawn waist grasp. `margin` (world units) expands
-    the ring outward so the loop sits in the free space around the object."""
-    grid = voxelization.output_grid
-    axes = [voxelization.grid_x, voxelization.grid_y, voxelization.grid_z]
-    up = axes[up_axis]
-    plane_idx = int(np.argmin(np.abs(np.asarray(up, dtype=float) - height)))
-    solid = grid >= 0  # surface ∪ inner
-    sel = [slice(None)] * 3
-    sel[up_axis] = plane_idx
-    plane = solid[tuple(sel)]
-    cells = np.argwhere(plane)
-    if len(cells) < 3:
-        raise ValueError("no solid cross-section at that height")
-    other = [a for a in range(3) if a != up_axis]
-    coords = np.column_stack((axes[other[0]][cells[:, 0]], axes[other[1]][cells[:, 1]]))
-    try:
-        order = ConvexHull(coords).vertices
-    except QhullError as exc:
-        raise ValueError("degenerate cross-section at that height") from exc
-    ring2d = coords[order]
-    center = ring2d.mean(axis=0)
-    if margin > 0.0:
-        directions = ring2d - center
-        norms = np.linalg.norm(directions, axis=1, keepdims=True)
-        norms[norms == 0.0] = 1.0
-        ring2d = ring2d + directions / norms * margin
-    n = len(ring2d)
-    loop = np.zeros((n + 1, 3), dtype=float)
-    loop[:n, other[0]] = ring2d[:, 0]
-    loop[:n, other[1]] = ring2d[:, 1]
-    loop[:n, up_axis] = float(up[plane_idx])
-    loop[n] = loop[0]
-    return CagingPath(final_path=loop, path1=loop[: n // 2 + 1], path2=loop[n // 2 :])
-
-
 def farthest_point_sample(points: np.ndarray, k: int, seed: int | None = None) -> list[int]:
     """Greedy farthest-point sampling of `k` indices (well-spread base points)."""
     points = np.asarray(points, dtype=float)
@@ -307,6 +262,17 @@ def farthest_point_sample(points: np.ndarray, k: int, seed: int | None = None) -
         chosen.append(nxt)
         dist = np.minimum(dist, np.linalg.norm(points - points[nxt], axis=1))
     return chosen
+
+
+def uniform_sample(points: np.ndarray, k: int, seed: int = 0) -> list[int]:
+    """`k` indices drawn uniformly at random (≈ uniform over the surface, as surface
+    voxels have roughly equal area) — matches the paper's '500 uniformly distributed
+    sample points'. Deterministic given `seed`."""
+    n = len(points)
+    if k >= n:
+        return list(range(n))
+    rng = np.random.default_rng(seed)
+    return sorted(int(i) for i in rng.choice(n, size=k, replace=False))
 
 
 def sweep_caging_loops(

@@ -230,6 +230,24 @@ def _surface_mask_from_inside(inside: np.ndarray) -> np.ndarray:
     return surface
 
 
+def convex_hull_grasping_mask(voxelization: VoxelizationResult) -> np.ndarray:
+    """Traversable mask bounded by the surface's convex hull (paper Theorem 3.2):
+    surface voxels + exterior voxels lying **inside** the convex hull of the surface.
+    Restricts the distance front to the region between the object and its hull."""
+    from scipy.spatial import Delaunay
+
+    grid_on = voxelization.grid_on
+    if len(grid_on) < 4:
+        return voxelization.output_grid != 0
+    tri = Delaunay(grid_on)
+    x, y, z = np.meshgrid(voxelization.grid_x, voxelization.grid_y, voxelization.grid_z, indexing="ij")
+    pts = np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+    inside = (tri.find_simplex(pts) >= 0).reshape(voxelization.output_grid.shape)
+    surface = voxelization.output_grid == 1
+    outer = voxelization.output_grid == -1
+    return surface | (outer & inside)
+
+
 def _ball(radius: int) -> np.ndarray:
     r = int(radius)
     size = 2 * r + 1

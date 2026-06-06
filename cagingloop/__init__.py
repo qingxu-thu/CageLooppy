@@ -12,12 +12,12 @@ from cagingloop.grasp import (
     generate_caging_grasp,
     generate_caging_grasps,
     get_cage_points,
-    horizontal_slice_loop,
     loop_enclosed_area,
     rank_caging_loops,
     select_caging_loop,
     smooth_closed_path,
     sweep_caging_loops,
+    uniform_sample,
     waist_score,
 )
 from cagingloop.model_io import (
@@ -26,11 +26,19 @@ from cagingloop.model_io import (
     load_obj_point_cloud,
     transfer_point_normals,
 )
+from cagingloop.curvature import positive_curvature_points, principal_curvatures
+from cagingloop.morse import (
+    caging_loop_space,
+    detect_morse_saddles_3d,
+    trace_loop_from_saddle,
+    volumetric_caging_loops,
+)
 from cagingloop.nearest import NearestTree, nn_prepare, nn_search
 from cagingloop.polyscope_visualization import (
     register_caging_loops_polyscope,
     register_pipeline_polyscope,
     show_caging_loops_polyscope,
+    show_internals_polyscope,
     show_pipeline_polyscope,
 )
 from cagingloop.saddle import (
@@ -41,6 +49,7 @@ from cagingloop.saddle import (
 )
 from cagingloop.types import CagingPath, DistanceMapResult, GridIndex, VoxelizationResult
 from cagingloop.voxelization import (
+    convex_hull_grasping_mask,
     generalized_winding_number,
     offset_voxelization,
     pointCloudVoxelizationByRBF,
@@ -72,13 +81,20 @@ __all__ = [
     "rank_caging_loops",
     "waist_score",
     "farthest_point_sample",
-    "horizontal_slice_loop",
+    "uniform_sample",
     "get_cage_points",
     "loop_enclosed_area",
     "compute_vertex_normals",
     "load_obj_mesh",
     "load_obj_point_cloud",
     "transfer_point_normals",
+    "detect_morse_saddles_3d",
+    "trace_loop_from_saddle",
+    "volumetric_caging_loops",
+    "caging_loop_space",
+    "positive_curvature_points",
+    "principal_curvatures",
+    "convex_hull_grasping_mask",
     "nn_prepare",
     "nn_search",
     "pointCloudVoxelizationByRBF",
@@ -90,5 +106,6 @@ __all__ = [
     "register_caging_loops_polyscope",
     "show_pipeline_polyscope",
     "show_caging_loops_polyscope",
+    "show_internals_polyscope",
     "smooth_closed_path",
 ]

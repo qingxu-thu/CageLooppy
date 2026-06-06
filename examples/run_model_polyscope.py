@@ -11,20 +11,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from cagingloop import (
+    caging_loop_space,
     detect_saddle_point,
     distance_map_by_fast_marching,
     generate_caging_grasps,
-    horizontal_slice_loop,
     load_obj_point_cloud,
-    loop_enclosed_area,
     offset_voxelization,
     point_cloud_voxelization_by_rbf,
     rank_caging_loops,
-    sweep_caging_loops,
     transfer_point_normals,
+    volumetric_caging_loops,
     voxelize_mesh,
 )
-from cagingloop.grasp import CagingCandidate
 from cagingloop.model_io import compute_vertex_normals, load_obj_mesh
 from cagingloop.polyscope_visualization import show_caging_loops_polyscope, show_pipeline_polyscope
 
@@ -42,8 +40,16 @@ def run_model(
     select: str = "area",
     gripper_radius: float = 0.0,
     target_height: float | None = None,
-    slice_height: float | None = None,
-    slice_margin: float = 0.0,
+    morse: bool = False,
+    use_convex_hull: bool = False,
+    sweep_radius: float | None = None,
+    curvature_filter: bool = False,
+    base_sampling: str = "farthest",
+    rings_per_point: int = 6,
+    base_height: float | None = None,
+    base_height_band: float = 0.1,
+    solver: str = "fmm",
+    integrator: str = "euler",
 ):
     if backend == "mesh":
         # Voxelize the actual triangle mesh via winding number: crisper, topology-correct
@@ -77,27 +83,36 @@ def run_model(
         print(f"r-offset: gripper_radius={gripper_radius} -> {radius_voxels} voxels, surface now {len(voxels.grid_on)}")
         if len(voxels.grid_on) == 0:
             raise ValueError("r-offset removed all surface points (radius too large)")
-    if slice_height is not None:
-        # Direct horizontal ring at a chosen height fraction (0..1) of the model — the
-        # most reliable way to get a clean horizontal waist loop at an exact height.
-        ylo, yhi = voxels.grid_on[:, 1].min(), voxels.grid_on[:, 1].max()
-        world_h = ylo + slice_height * (yhi - ylo)
-        loop = horizontal_slice_loop(voxels, world_h, up_axis=1, margin=slice_margin)
-        cand = CagingCandidate(-1, loop, loop_enclosed_area(loop.final_path), 0.0, -1)
-        return points, voxels, None, np.zeros((0,), dtype=int), [cand]
 
     # Transfer the model's true surface normals to each surface voxel, matching
     # MATLAB's `grid_on_normals` input rather than approximating radially.
     surface_normals = transfer_point_normals(normals_source_pts, normals_source_n, voxels.grid_on)
 
     if sweep > 0:
-        # Paper Algorithm 2: pool loops from many base points so loops anywhere on the
-        # object (e.g. a waist loop) are found, not just near one seed.
-        distance = None
-        saddles = np.zeros((0,), dtype=int)
-        pool = sweep_caging_loops(voxels, surface_normals, base_points=sweep, max_loops_per_source=6)
+        # Paper Algorithm 2: pool loops from many base points, with its filtering rules
+        # (Thm 3.2 convex-hull grasping space, Thm 3.3 curvature base-point filter,
+        # 2h sweep radius). method='morse' uses volumetric saddles (Fig.3), else surface.
+        pool = caging_loop_space(
+            voxels, surface_normals, base_points=sweep,
+            method=("morse" if morse else "surface"),
+            use_convex_hull=use_convex_hull, sweep_radius=sweep_radius, curvature_filter=curvature_filter,
+            base_sampling=base_sampling, max_loops_per_source=rings_per_point,
+            base_height=base_height, base_height_band=base_height_band,
+            solver=solver,
+        )
         candidates = rank_caging_loops(pool, voxels, mode=select, target_height=target_height)[:max_loops]
-        return points, voxels, distance, saddles, candidates
+        return points, voxels, None, np.zeros((0,), dtype=int), candidates
+
+    if morse:
+        # Single base point, volumetric Morse-saddle loops (Fig. 3 + Thm 3.1).
+        if source_point_id < 0:
+            g = voxels.grid_on
+            src = int(np.argmax(np.linalg.norm(g - g.mean(axis=0), axis=1)))
+        else:
+            src = min(source_point_id, len(voxels.grid_on) - 1)
+        pool = volumetric_caging_loops(voxels, src, solver=solver)
+        candidates = rank_caging_loops(pool, voxels, mode=select, target_height=target_height)[:max_loops]
+        return points, voxels, None, np.zeros((0,), dtype=int), candidates
 
     if source_point_id < 0:
         # Auto-seed: the surface point farthest from the centroid behaves like a
@@ -107,7 +122,7 @@ def run_model(
         source_point_id = int(np.argmax(np.linalg.norm(grid_on - grid_on.mean(axis=0), axis=1)))
     else:
         source_point_id = min(source_point_id, len(voxels.grid_on) - 1)
-    distance = distance_map_by_fast_marching(voxels, source_point_id, prefer_fmm=True)
+    distance = distance_map_by_fast_marching(voxels, source_point_id, solver=solver)
     # Evaluate every saddle candidate (keep wide) and keep the loop that actually
     # wraps the object, instead of the single diversity-top saddle that MATLAB's
     # heuristic returns (which is often a degenerate sliver).
@@ -120,7 +135,8 @@ def run_model(
     candidates = []
     if len(saddles) > 0:
         pool = generate_caging_grasps(
-            distance.distance_grid, voxels, source_point_id, distance.dismap, saddles, max_loops=10 * max_loops
+            distance.distance_grid, voxels, source_point_id, distance.dismap, saddles,
+            max_loops=10 * max_loops, integrator=integrator,
         )
         candidates = rank_caging_loops(pool, voxels, mode=select, target_height=target_height)[:max_loops]
     return points, voxels, distance, saddles, candidates
@@ -141,16 +157,42 @@ def main() -> None:
                         help="Sample N base points (paper Algorithm 2) and pool their loops. 0 = single source.")
     parser.add_argument("--select", choices=["area", "small", "waist"], default="area",
                         help="Loop ranking: area = largest (body); small = smallest non-degenerate (handle); waist = near CoG + horizontal.")
+    parser.add_argument("--morse", action="store_true",
+                        help="Use volumetric Morse-saddle loops (paper Fig.3+Thm3.1); can thread holes. Pair with --backend mesh + high --voxel-count.")
+    parser.add_argument("--grasp-hull", action="store_true",
+                        help="Algorithm 2 / Thm 3.2: bound the grasping space by the surface's convex hull (with --sweep).")
+    parser.add_argument("--curvature-filter", action="store_true",
+                        help="Algorithm 2 / Thm 3.3: only seed base points with a positive principal curvature (with --sweep).")
+    parser.add_argument("--sweep-radius", type=float, default=None,
+                        help="Algorithm 2: cap the distance sweep at this radius = 2h (gripper reach), world units (with --sweep).")
+    parser.add_argument("--base-sampling", choices=["farthest", "uniform"], default="farthest",
+                        help="How to choose the --sweep base points: farthest-point (well-spread) or uniform random (paper).")
+    parser.add_argument("--rings-per-point", type=int, default=6,
+                        help="Max caging loops kept per base point (largest-area). 16 pts x 6 = up to 96 rings.")
+    parser.add_argument("--base-height", type=float, default=None,
+                        help="Restrict --sweep base points to this height FRACTION (0..1) of the model (e.g. 0.55).")
+    parser.add_argument("--base-height-band", type=float, default=0.1,
+                        help="Width of the base-point height band as a fraction of model height (default 0.1).")
     parser.add_argument("--target-height", type=float, default=None,
                         help="With --select waist: aim the loop at this height (world units, along the up axis).")
-    parser.add_argument("--slice-height", type=float, default=None,
-                        help="Direct horizontal ring at this height FRACTION (0..1) of the model (e.g. 0.55 = neck).")
-    parser.add_argument("--slice-margin", type=float, default=0.02,
-                        help="Expand the slice ring outward by this much (world units) into the free space.")
     parser.add_argument("--max-loops", type=int, default=10, help="How many top caging-loop candidates to keep.")
     parser.add_argument("--loop-rank", type=int, default=0, help="Which candidate to display (rank 0 = best).")
     parser.add_argument("--show-all", action="store_true", help="Show all candidate loops at once (distinct colors).")
+    parser.add_argument("--slider", action="store_true", help="With --show-all: add a UI slider to browse loops one at a time.")
     parser.add_argument("--no-show", action="store_true", help="Build and register data without opening the UI.")
+    parser.add_argument("--slice-height", type=float, default=None,
+                        help="Show the distance field on a horizontal cross-section at this height FRACTION (0..1). "
+                             "Needs a volumetric distance field (single-source surface mode).")
+    parser.add_argument("--show-mesh", action="store_true", help="Register the actual OBJ triangle mesh (semi-transparent).")
+    parser.add_argument("--mesh-shift", type=float, nargs=3, default=(0.0, 0.0, 0.0), metavar=("DX", "DY", "DZ"),
+                        help="Translate the OBJ mesh by this world-space offset (to separate it from the voxel layers).")
+    parser.add_argument("--solver", choices=["fmm", "msfm", "dijkstra"], default="fmm",
+                        help="Distance-field solver: fmm = single-stencil Eikonal fast marching (Euclidean, needs skfmm); "
+                             "msfm = multistencil fast marching (MATLAB-parity, lowest anisotropy, pure Python); "
+                             "dijkstra = 6-neighbor grid-graph geodesic (Manhattan, no skfmm needed).")
+    parser.add_argument("--path-integrator", choices=["euler", "rk4"], default="euler",
+                        help="Shortest-path tracer (surface method): euler = normalised-gradient streamline (default); "
+                             "rk4 = MATLAB shortestpath parity (RK4 over the pointmin descent field).")
     args = parser.parse_args()
 
     model_path = Path(args.model)
@@ -166,8 +208,16 @@ def main() -> None:
         select=args.select,
         gripper_radius=args.gripper_radius,
         target_height=args.target_height,
-        slice_height=args.slice_height,
-        slice_margin=args.slice_margin,
+        morse=args.morse,
+        use_convex_hull=args.grasp_hull,
+        sweep_radius=args.sweep_radius,
+        curvature_filter=args.curvature_filter,
+        base_sampling=args.base_sampling,
+        rings_per_point=args.rings_per_point,
+        base_height=args.base_height,
+        base_height_band=args.base_height_band,
+        solver=args.solver,
+        integrator=args.path_integrator,
     )
     print(f"model: {model_path}")
     print(f"backend: {args.backend}  sweep: {args.sweep}  select: {args.select}")
@@ -190,7 +240,9 @@ def main() -> None:
             print(f"{rank:>4} {c.source_id:>6} {c.saddle_id:>7} {c.area:>8.4f} {c.separation:>6.2f} "
                   f"{hfrac:>7.2f} {tilt:>6.2f}{mark}")
 
-    if args.show_all and candidates:
+    obj_mesh = load_obj_mesh(model_path) if args.show_mesh else None
+    mesh_shift = tuple(args.mesh_shift)
+    if (args.show_all or args.slider) and candidates:
         labels = [
             f"loop{r:02d} s{c.saddle_id} a{c.area:.3f}" for r, c in enumerate(candidates)
         ]
@@ -200,12 +252,20 @@ def main() -> None:
             labels=labels,
             distance=distance,
             saddles=saddles,
+            slider=args.slider,
+            slice_height=args.slice_height,
+            obj_mesh=obj_mesh,
+            mesh_shift=mesh_shift,
             show=not args.no_show,
         )
     else:
         chosen = candidates[args.loop_rank] if 0 <= args.loop_rank < len(candidates) else None
         caging = chosen.path if chosen is not None else None
-        show_pipeline_polyscope(voxels, distance=distance, saddles=saddles, caging=caging, show=not args.no_show)
+        show_pipeline_polyscope(
+            voxels, distance=distance, saddles=saddles, caging=caging,
+            slice_height=args.slice_height, obj_mesh=obj_mesh, mesh_shift=mesh_shift,
+            show=not args.no_show,
+        )
 
 
 if __name__ == "__main__":
