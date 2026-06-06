@@ -230,6 +230,54 @@ def _surface_mask_from_inside(inside: np.ndarray) -> np.ndarray:
     return surface
 
 
+def _ball(radius: int) -> np.ndarray:
+    r = int(radius)
+    size = 2 * r + 1
+    z, y, x = np.ogrid[:size, :size, :size]
+    return ((x - r) ** 2 + (y - r) ** 2 + (z - r) ** 2) <= r * r
+
+
+def offset_voxelization(voxelization: VoxelizationResult, radius_voxels: int) -> VoxelizationResult:
+    """Grow the solid by `radius_voxels` (the paper's r-offset surface `S_r`, §IV).
+
+    Morphologically dilates the occupied region by a ball of `radius_voxels`, fusing
+    gaps narrower than ~2*radius — e.g. the thin split columns of a trophy neck merge
+    into one graspable bundle, so a caging loop can wrap the bundle instead of weaving
+    between the columns. `radius_voxels` is the gripper radius expressed in voxels.
+    Returns a new VoxelizationResult on the same grid (mesh field, if any, is dropped).
+    """
+    radius_voxels = int(radius_voxels)
+    if radius_voxels < 1:
+        return voxelization
+    from scipy.ndimage import binary_dilation
+
+    occupied = voxelization.output_grid >= 0  # surface ∪ inner = the object solid
+    dilated = binary_dilation(occupied, structure=_ball(radius_voxels))
+
+    surface = _surface_mask_from_inside(dilated)
+    inner = dilated & ~surface
+    outer = ~dilated & ~surface
+    output_grid = np.full(dilated.shape, -1, dtype=int)
+    output_grid[inner] = 0
+    output_grid[surface] = 1
+
+    on_index = np.argwhere(surface).astype(int)
+    inner_index = np.argwhere(inner).astype(int)
+    outer_index = np.argwhere(outer).astype(int)
+    gx, gy, gz = voxelization.grid_x, voxelization.grid_y, voxelization.grid_z
+    return VoxelizationResult(
+        output_grid=output_grid,
+        grid_x=gx,
+        grid_y=gy,
+        grid_z=gz,
+        index=GridIndex(on_index=on_index, inner_index=inner_index, outer_index=outer_index),
+        grid_on=_coords_from_indices(on_index, gx, gy, gz),
+        grids_inner=_coords_from_indices(inner_index, gx, gy, gz),
+        grids_outer=_coords_from_indices(outer_index, gx, gy, gz),
+        mesh=None,
+    )
+
+
 def voxelize_mesh(
     vertices: np.ndarray,
     faces: np.ndarray,

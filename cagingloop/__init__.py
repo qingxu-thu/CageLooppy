@@ -5,12 +5,20 @@ from cagingloop.distance import (
     distance_map_by_fast_marching,
 )
 from cagingloop.grasp import (
+    CagingCandidate,
+    farthest_point_sample,
     generateCagingGrasp,
     generate_best_caging_grasp,
     generate_caging_grasp,
+    generate_caging_grasps,
     get_cage_points,
+    horizontal_slice_loop,
     loop_enclosed_area,
+    rank_caging_loops,
+    select_caging_loop,
     smooth_closed_path,
+    sweep_caging_loops,
+    waist_score,
 )
 from cagingloop.model_io import (
     compute_vertex_normals,
@@ -19,7 +27,12 @@ from cagingloop.model_io import (
     transfer_point_normals,
 )
 from cagingloop.nearest import NearestTree, nn_prepare, nn_search
-from cagingloop.polyscope_visualization import register_pipeline_polyscope, show_pipeline_polyscope
+from cagingloop.polyscope_visualization import (
+    register_caging_loops_polyscope,
+    register_pipeline_polyscope,
+    show_caging_loops_polyscope,
+    show_pipeline_polyscope,
+)
 from cagingloop.saddle import (
     calculate_iter_num,
     detectSaddlePoint,
@@ -29,6 +42,7 @@ from cagingloop.saddle import (
 from cagingloop.types import CagingPath, DistanceMapResult, GridIndex, VoxelizationResult
 from cagingloop.voxelization import (
     generalized_winding_number,
+    offset_voxelization,
     pointCloudVoxelizationByRBF,
     point_cloud_voxelization_by_rbf,
     voxelize_mesh,
@@ -48,9 +62,17 @@ __all__ = [
     "detect_saddle_point",
     "distance_map_by_fast_marching",
     "diversity_eval",
+    "CagingCandidate",
     "generateCagingGrasp",
     "generate_caging_grasp",
+    "generate_caging_grasps",
     "generate_best_caging_grasp",
+    "sweep_caging_loops",
+    "select_caging_loop",
+    "rank_caging_loops",
+    "waist_score",
+    "farthest_point_sample",
+    "horizontal_slice_loop",
     "get_cage_points",
     "loop_enclosed_area",
     "compute_vertex_normals",
@@ -62,8 +84,11 @@ __all__ = [
     "pointCloudVoxelizationByRBF",
     "point_cloud_voxelization_by_rbf",
     "voxelize_mesh",
+    "offset_voxelization",
     "generalized_winding_number",
     "register_pipeline_polyscope",
+    "register_caging_loops_polyscope",
     "show_pipeline_polyscope",
+    "show_caging_loops_polyscope",
     "smooth_closed_path",
 ]

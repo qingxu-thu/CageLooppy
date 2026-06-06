@@ -32,8 +32,10 @@ def diversity_eval(p1: np.ndarray, p2: np.ndarray, normal1: np.ndarray, normal2:
     return float(np.exp(-0.5 * (max_angle * 2.0**4)))
 
 
-def _local_frame(grid_on: np.ndarray, point_id: int, frame_k: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    tree = nn_prepare(grid_on)
+def _local_frame(
+    grid_on: np.ndarray, point_id: int, frame_k: int, tree=None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    tree = tree if tree is not None else nn_prepare(grid_on)
     count = min(frame_k, len(grid_on))
     indices, _ = nn_search(grid_on, tree, grid_on[point_id : point_id + 1], count)
     neighbor_ids = [idx for idx in indices[0].tolist() if idx != point_id]
@@ -55,14 +57,15 @@ def _project_neighbors(
     grid_on: np.ndarray,
     point_id: int,
     k: int,
+    tree=None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    tree = nn_prepare(grid_on)
+    tree = tree if tree is not None else nn_prepare(grid_on)
     count = min(max(k, 2), len(grid_on))
     indices, _ = nn_search(grid_on, tree, grid_on[point_id : point_id + 1], count)
     neighbor_ids = np.array([idx for idx in indices[0].tolist() if idx != point_id], dtype=int)
     if len(neighbor_ids) < 3:
         return neighbor_ids, np.zeros((0, 2), dtype=float)
-    u_direct, v_direct, _ = _local_frame(grid_on, point_id, min(15, len(grid_on)))
+    u_direct, v_direct, _ = _local_frame(grid_on, point_id, min(15, len(grid_on)), tree=tree)
     offsets = grid_on[neighbor_ids] - grid_on[point_id]
     projected = np.column_stack((offsets @ u_direct, offsets @ v_direct))
     return neighbor_ids, projected
@@ -147,7 +150,7 @@ def _count_transitions(judge: np.ndarray) -> int:
     return int(np.count_nonzero(signs != np.roll(signs, -1)))
 
 
-def calculate_iter_num(dismap: np.ndarray, grid_on: np.ndarray, point_id: int, k: int = 9) -> int:
+def calculate_iter_num(dismap: np.ndarray, grid_on: np.ndarray, point_id: int, k: int = 9, tree=None) -> int:
     dismap = np.asarray(dismap, dtype=float)
     grid_on = _as_xyz_array(grid_on, "grid_on")
     if point_id < 0 or point_id >= len(grid_on):
@@ -155,7 +158,7 @@ def calculate_iter_num(dismap: np.ndarray, grid_on: np.ndarray, point_id: int, k
     if len(dismap) != len(grid_on):
         raise ValueError("dismap length must match grid_on")
 
-    neighbor_ids, projected = _project_neighbors(grid_on, point_id, k)
+    neighbor_ids, projected = _project_neighbors(grid_on, point_id, k, tree=tree)
     if len(projected) < 3:
         return -1
     boundary = _boundary_order(projected)
@@ -188,9 +191,12 @@ def detect_saddle_point(
     if source_point_id < 0 or source_point_id >= len(grid_on):
         raise ValueError("source_point_id is outside grid_on")
 
+    # Build the KD-tree once and reuse it for every point (instead of rebuilding it
+    # per point), so saddle detection scales to high-resolution grids.
+    tree = nn_prepare(grid_on)
     candidates: list[int] = []
     for point_id in range(len(grid_on)):
-        if calculate_iter_num(dismap, grid_on, point_id, k=k) >= 4:
+        if calculate_iter_num(dismap, grid_on, point_id, k=k, tree=tree) >= 4:
             candidates.append(point_id)
     if not candidates:
         return np.zeros((0,), dtype=int)

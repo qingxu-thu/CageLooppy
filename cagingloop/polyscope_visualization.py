@@ -107,6 +107,63 @@ def register_pipeline_polyscope(
     return registered
 
 
+def _distinct_color(i: int, n: int) -> tuple[float, float, float]:
+    """Evenly-spaced hue -> RGB, so many loops are easy to tell apart."""
+    import colorsys
+
+    hue = (i / max(n, 1)) % 1.0
+    return colorsys.hsv_to_rgb(hue, 0.85, 0.95)
+
+
+def register_caging_loops_polyscope(
+    ps,
+    loops,
+    *,
+    labels=None,
+    radius: float = 0.008,
+) -> dict[str, Any]:
+    """Register a list of caging loops (each a `CagingPath` or an N x 3 array) as
+    separately-toggleable, distinctly-coloured curve networks."""
+    registered: dict[str, Any] = {}
+    loops = list(loops)
+    for i, loop in enumerate(loops):
+        path = np.asarray(getattr(loop, "final_path", loop), dtype=float)
+        if len(path) < 2:
+            continue
+        label = labels[i] if labels is not None and i < len(labels) else f"loop {i:02d}"
+        curve = ps.register_curve_network(
+            label,
+            path,
+            _loop_edges(len(path)),
+            radius=radius,
+            color=_distinct_color(i, len(loops)),
+        )
+        registered[label] = curve
+    return registered
+
+
+def show_caging_loops_polyscope(
+    voxelization: VoxelizationResult,
+    loops,
+    *,
+    labels=None,
+    distance: DistanceMapResult | None = None,
+    saddles: np.ndarray | None = None,
+    ps_module=None,
+    show: bool = True,
+) -> dict[str, Any]:
+    """Show the surface (+ optional distance/saddles) with *all* given caging loops at once."""
+    ps = _load_polyscope(ps_module)
+    ps.init()
+    registered = register_pipeline_polyscope(
+        voxelization, distance=distance, saddles=saddles, caging=None, ps_module=ps
+    )
+    registered.update(register_caging_loops_polyscope(ps, loops, labels=labels))
+    if show:
+        ps.show()
+    return registered
+
+
 def show_pipeline_polyscope(
     voxelization: VoxelizationResult,
     *,
