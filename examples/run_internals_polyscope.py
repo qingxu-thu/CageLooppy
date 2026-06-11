@@ -14,10 +14,14 @@ if str(ROOT) not in sys.path:
 from cagingloop import (
     detect_saddle_point,
     distance_map_by_fast_marching,
+    filter_by_isoperimetric,
+    filter_by_linking,
+    filter_locally_shortest,
     generate_caging_grasps,
     load_obj_point_cloud,
     offset_voxelization,
     point_cloud_voxelization_by_rbf,
+    rank_caging_loops,
     transfer_point_normals,
     voxelize_mesh,
 )
@@ -55,7 +59,27 @@ def main() -> None:
                     help="Distance-field solver: fmm = single-stencil Eikonal fast marching (Euclidean, needs skfmm); "
                          "msfm = multistencil fast marching (MATLAB-parity, lowest anisotropy, pure Python); "
                          "dijkstra = 6-neighbor grid-graph geodesic (Manhattan, no skfmm needed).")
-    ap.add_argument("--max-loops", type=int, default=5, help="How many traced loops to draw per base point.")
+    ap.add_argument("--max-loops", type=int, default=5, help="How many traced loops to draw (after filtering/ranking).")
+    ap.add_argument("--select", choices=["area", "small", "mechanical"], default="area",
+                    help="Loop ranking: area = largest; small = smallest non-degenerate; "
+                         "mechanical = paper SS II.A (loop centre near centre-of-gravity + roughly horizontal).")
+    ap.add_argument("--ls-filter", action="store_true",
+                    help="Apply the paper's L~ -> L filter: drop loops not locally shortest at their base point p "
+                         "(Remark after Property 2.7; Fig. 4f). Windowed shortenability test.")
+    ap.add_argument("--ls-window", type=int, default=3,
+                    help="Half-window (loop points each side of p) for the --ls-filter shortenability test.")
+    ap.add_argument("--ls-straightness", type=float, default=0.95,
+                    help="chord/sub-path ratio at p above which the loop counts as 'straight through' (keep). "
+                         "Lower = stricter (filters more).")
+    ap.add_argument("--min-rho", type=float, default=0.0,
+                    help="Drop loops with isoperimetric ratio area/perimeter^2 below this (0 = off). "
+                         "SHAPE floor: rejects line-like loops at any scale; a circle is ~0.0796.")
+    ap.add_argument("--link-filter", action="store_true",
+                    help="Keep only loops that encircle object material (link the solid). Size-independent: "
+                         "keeps small genuine handle loops, drops 'encircles nothing' surface stubs.")
+    ap.add_argument("--link-min-frac", type=float, default=0.06,
+                    help="For --link-filter: min fraction of the loop's inner disk that must be solid. "
+                         "Higher = stricter (drops more surface stubs); lower = keeps thinner-handle loops.")
     ap.add_argument("--slider", action="store_true", help="Add a UI slider to browse the loops one at a time.")
     ap.add_argument("--slice-plane", action="store_true",
                     help="Add a movable scene slice plane to cut into the D_p-coloured grasp-space volume.")
@@ -121,9 +145,11 @@ def main() -> None:
     mask = convex_hull_grasping_mask(voxels) if args.grasp_hull else (voxels.output_grid != 0)
     axes_off = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
     single = len(base_ids) == 1  # only draw the +/- field for one base point (else cluttered)
-    saddle_voxels, saddle_points, saddle_types, saddle_source, saddle_descents, all_loops = [], [], [], [], [], []
+    saddle_voxels, saddle_points, saddle_types, saddle_source, saddle_descents = [], [], [], [], []
+    pool = []  # CagingCandidate pool across all base points (filtered + ranked below)
     npts, signs = [], []
     first_distance = None
+    per_base_cap = max(args.max_loops, 50)  # generous per-base cap; global ranking decides the final set
     for si, bid in enumerate(base_ids):
         d = distance_map_by_fast_marching(
             voxels, bid, solver=args.solver, traversable_mask=mask, max_distance=args.sweep_radius
@@ -146,8 +172,7 @@ def main() -> None:
                         if 0 <= na < sh[0] and 0 <= nb < sh[1] and 0 <= nc < sh[2] and np.isfinite(D[na, nb, nc]):
                             npts.append([voxels.grid_x[na], voxels.grid_y[nb], voxels.grid_z[nc]])
                             signs.append(1.0 if D[na, nb, nc] > D[a, b, c] else -1.0)
-            for cand in sorted(volumetric_caging_loops(voxels, bid, distance=d), key=lambda c: c.area, reverse=True)[: args.max_loops]:
-                all_loops.append(cand.path)
+            pool.extend(volumetric_caging_loops(voxels, bid, distance=d, max_loops=per_base_cap))
         else:  # surface method: MATLAB detectSaddlePoint on the surface point cloud
             sad_ids = detect_saddle_point(d.dismap, go, bid, normals, keep=len(go))
             for sid in np.atleast_1d(sad_ids).astype(int):
@@ -163,18 +188,29 @@ def main() -> None:
                             npts.append(list(w))
                             signs.append(1.0 if jv > 0 else -1.0)
             if len(sad_ids) > 0:
-                pool = generate_caging_grasps(
+                pool.extend(generate_caging_grasps(
                     d.distance_grid, voxels, bid, d.dismap, sad_ids,
-                    max_loops=args.max_loops, integrator=args.path_integrator,
-                )
-                for cand in sorted(pool, key=lambda c: c.area, reverse=True)[: args.max_loops]:
-                    all_loops.append(cand.path)
+                    max_loops=per_base_cap, integrator=args.path_integrator,
+                ))
+
+    n_raw = len(pool)
+    if args.min_rho > 0.0:  # SHAPE floor: drop line-like (thin) loops, scale-free
+        pool = filter_by_isoperimetric(pool, args.min_rho)
+    n_rho = len(pool)
+    if args.link_filter:  # ENCIRCLEMENT: keep only loops that go around object material (any size)
+        pool = filter_by_linking(pool, voxels, min_frac=args.link_min_frac)
+    n_link = len(pool)
+    if args.ls_filter:  # paper L~ -> L: drop loops not locally shortest at their base point p
+        pool = filter_locally_shortest(pool, voxels, window=args.ls_window, min_straightness=args.ls_straightness)
+    ranked = rank_caging_loops(pool, voxels, mode=args.select)[: args.max_loops]
+    all_loops = [c.path for c in ranked]
 
     saddle_neighbors = (np.array(npts), np.array(signs)) if npts else None
     hull = (go, ConvexHull(go).simplices)
     n_saddles = len(saddle_voxels) if args.method == "morse" else len(saddle_points)
-    print(f"method={args.method}  base points={len(base_ids)} (ids {base_ids[:8]}{'...' if len(base_ids) > 8 else ''}), "
-          f"grasp-space voxels={int(mask.sum())}, saddles={n_saddles}, loops drawn={len(all_loops)}")
+    print(f"method={args.method}  base points={len(base_ids)}  saddles={n_saddles}  "
+          f"loops: raw={n_raw} -> min-rho({n_rho}) -> link({n_link}) "
+          f"-> ls-filter={'on' if args.ls_filter else 'off'}({len(pool)}) -> {args.select} top {len(all_loops)}")
 
     show_internals_polyscope(
         voxels,

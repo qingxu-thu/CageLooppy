@@ -156,6 +156,181 @@ def generate_caging_grasp(
     )
 
 
+def _segment_penetrates_solid(a: np.ndarray, b: np.ndarray, voxelization: VoxelizationResult, *, samples: int = 8) -> bool:
+    """True if the straight chord a->b passes through the object interior (an inner
+    voxel). Used to tell a free-space shortcut from one blocked by the surface."""
+    gx, gy, gz = voxelization.grid_x, voxelization.grid_y, voxelization.grid_z
+    og = voxelization.output_grid
+
+    def to_idx(coord: float, axis: np.ndarray) -> int:
+        origin = float(axis[0])
+        spacing = float(axis[1] - axis[0]) if len(axis) > 1 else 1.0
+        return int(np.clip(round((coord - origin) / spacing), 0, len(axis) - 1))
+
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    for t in np.linspace(0.0, 1.0, samples):
+        q = a + t * (b - a)
+        if og[to_idx(q[0], gx), to_idx(q[1], gy), to_idx(q[2], gz)] == 0:  # interior solid
+            return True
+    return False
+
+
+def loop_locally_shortest_at_base(
+    candidate: CagingCandidate,
+    voxelization: VoxelizationResult,
+    *,
+    window: int = 3,
+    min_straightness: float = 0.95,
+) -> bool:
+    """Paper L̃ -> L test (Remark after Property 2.7; Fig. 4f): keep a p-based loop only
+    if it is **locally shortest at its base point p**. A p-based loop is locally shortest
+    everywhere except possibly at p (Def. 2.6), so we only inspect the neighbourhood of p.
+
+    Direct shortenability test (the literal definition, robust to voxel jaggedness because
+    it fits a whole window rather than two segments): take the `window` loop points on each
+    side of p, and the straight chord between the window's two ends. Let
+    `straightness = |chord| / (sub-path length)` (1 = already straight, < 1 = there is a
+    corner to cut). The loop is NOT locally shortest at p iff that corner is genuinely
+    removable: `straightness < min_straightness` AND the chord stays in free space (a chord
+    that would penetrate the solid is a real taut touch held by the surface -> keep).
+
+    The paper states this filter but does not specify the test, so this is our interpretation."""
+    path = np.asarray(candidate.path.final_path, dtype=float)
+    n = len(path)
+    if n < 5:
+        return True  # too short to judge a corner; don't over-filter
+    sid = getattr(candidate, "source_id", -1)
+    if sid is None or sid < 0 or sid >= len(voxelization.grid_on):
+        return True
+    p = voxelization.grid_on[sid]
+    idx = int(np.argmin(np.linalg.norm(path - p, axis=1)))  # where the loop touches p
+    w = max(1, min(window, n // 2 - 1))
+    ring = [(idx + k) % n for k in range(-w, w + 1)]
+    sub = path[ring]
+    subpath_len = float(np.linalg.norm(np.diff(sub, axis=0), axis=1).sum())
+    a, b = sub[0], sub[-1]
+    chord_len = float(np.linalg.norm(b - a))
+    if subpath_len < 1e-12:
+        return True
+    straightness = chord_len / subpath_len
+    if straightness >= min_straightness:
+        return True  # already ~straight through p: not shortenable -> locally shortest
+    return _segment_penetrates_solid(a, b, voxelization)  # corner: keep only if held by surface
+
+
+def filter_locally_shortest(
+    pool: list[CagingCandidate],
+    voxelization: VoxelizationResult,
+    *,
+    window: int = 3,
+    min_straightness: float = 0.95,
+) -> list[CagingCandidate]:
+    """Apply `loop_locally_shortest_at_base` to a pool — the paper's L̃ -> L reduction."""
+    return [
+        c for c in pool
+        if loop_locally_shortest_at_base(c, voxelization, window=window, min_straightness=min_straightness)
+    ]
+
+
+def isoperimetric_ratio(path: np.ndarray) -> float:
+    """Shape-degeneracy measure rho = area / perimeter^2: ~0 for a loop collapsed toward a
+    line, 1/(4*pi) ~= 0.0796 for a circle. Scale-free, so it rejects line-like loops at any
+    size (unlike an absolute area floor)."""
+    path = _as_path(path)
+    if len(path) < 3:
+        return 0.0
+    perimeter = float(np.linalg.norm(np.diff(np.vstack((path, path[:1])), axis=0), axis=1).sum())
+    if perimeter < 1e-12:
+        return 0.0
+    return loop_enclosed_area(path) / (perimeter * perimeter)
+
+
+def filter_by_isoperimetric(pool: list[CagingCandidate], min_rho: float) -> list[CagingCandidate]:
+    """Drop loops whose isoperimetric ratio is below `min_rho` (line-like / degenerate)."""
+    if min_rho <= 0.0:
+        return list(pool)
+    return [c for c in pool if isoperimetric_ratio(c.path.final_path) >= min_rho]
+
+
+def _points_inside_polygon(px: np.ndarray, py: np.ndarray, vx: np.ndarray, vy: np.ndarray) -> np.ndarray:
+    """Even-odd point-in-polygon for many sample points (px,py) against polygon (vx,vy)."""
+    inside = np.zeros(len(px), dtype=bool)
+    n = len(vx)
+    j = n - 1
+    for i in range(n):
+        cond = ((vy[i] > py) != (vy[j] > py)) & (
+            px < (vx[j] - vx[i]) * (py - vy[i]) / (vy[j] - vy[i] + 1e-12) + vx[i]
+        )
+        inside ^= cond
+        j = i
+    return inside
+
+
+def loop_encircles_solid(
+    candidate: CagingCandidate,
+    voxelization: VoxelizationResult,
+    *,
+    samples: int = 16,
+    shrink: float = 0.6,
+    min_frac: float = 0.06,
+) -> bool:
+    """Does the loop go *around object material* (link the solid)? A real caging loop — even a
+    tiny one around a thin handle — has a spanning disk whose **interior** passes through the
+    object; a degenerate surface stub only grazes the solid at its rim. Size-independent, so it
+    keeps small genuine handle loops and drops 'encircles nothing' stubs (unlike a length floor).
+
+    We fit the loop plane (normal n) and sample the disk **shrunk toward the centroid** (factor
+    `shrink`, ignoring the rim). For each inner sample we test the solid a step off-plane on *both*
+    sides (+n and -n): the loop links the solid iff material **passes through** the plane somewhere
+    inside it (solid on both sides). A bar or the body pierces the plane; a surface patch only has
+    solid on one side, so it is dropped. `min_frac` = min fraction of inner samples that straddle."""
+    path = _as_path(candidate.path.final_path)
+    if len(path) < 3:
+        return False
+    centroid = path.mean(axis=0)
+    centered = path - centroid
+    try:
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    except np.linalg.LinAlgError:
+        return False
+    u, v, n = vh[0], vh[1], vh[2]  # in-plane basis (u, v) and loop-plane normal n
+    poly = np.column_stack((centered @ u, centered @ v))
+    test_poly = poly * shrink  # inner region only: ignore the rim where a tangent disk clips solid
+    lo, hi = test_poly.min(axis=0), test_poly.max(axis=0)
+    su = np.linspace(lo[0], hi[0], samples)
+    sv = np.linspace(lo[1], hi[1], samples)
+    gu, gv = np.meshgrid(su, sv)
+    gu, gv = gu.ravel(), gv.ravel()
+    inside = _points_inside_polygon(gu, gv, test_poly[:, 0], test_poly[:, 1])
+    n_inside = int(inside.sum())
+    if n_inside == 0:
+        return False
+    gx, gy, gz = voxelization.grid_x, voxelization.grid_y, voxelization.grid_z
+    og = voxelization.output_grid
+    spacing = float(gx[1] - gx[0]) if len(gx) > 1 else 1.0
+    step = 1.5 * spacing * n  # one-voxel offset along the loop-plane normal
+
+    def is_solid(points: np.ndarray) -> np.ndarray:
+        def to_idx(coord: np.ndarray, axis: np.ndarray) -> np.ndarray:
+            origin = float(axis[0])
+            sp = float(axis[1] - axis[0]) if len(axis) > 1 else 1.0
+            return np.clip(np.round((coord - origin) / sp).astype(int), 0, len(axis) - 1)
+        return og[to_idx(points[:, 0], gx), to_idx(points[:, 1], gy), to_idx(points[:, 2], gz)] == 0
+
+    world = centroid + np.outer(gu[inside], u) + np.outer(gv[inside], v)
+    straddle = is_solid(world + step) & is_solid(world - step)  # material pierces the loop plane
+    return float(np.mean(straddle)) >= min_frac
+
+
+def filter_by_linking(
+    pool: list[CagingCandidate], voxelization: VoxelizationResult, *, min_frac: float = 0.06
+) -> list[CagingCandidate]:
+    """Keep only loops that encircle object material (drop 'encircles nothing' surface stubs).
+    `min_frac` = minimum fraction of the loop's inner disk that must be solid (higher = stricter)."""
+    return [c for c in pool if loop_encircles_solid(c, voxelization, min_frac=min_frac)]
+
+
 def loop_enclosed_area(path: np.ndarray) -> float:
     """Approximate area enclosed by a closed 3D loop (degenerate slivers ~ 0)."""
     path = _as_path(path)
@@ -344,10 +519,12 @@ def rank_caging_loops(
     min_area: float = 0.0,
 ) -> list[CagingCandidate]:
     """Rank pooled loops. `mode='area'` = largest first (body-wrapping); `mode='small'`
-    = smallest non-degenerate first (tight loops, e.g. around a handle); `mode='waist'`
-    = paper's mechanical criteria (near centre-of-gravity + horizontal)."""
+    = smallest non-degenerate first (tight loops, e.g. around a handle); `mode='mechanical'`
+    (alias `'waist'`) = the paper's §II.A mechanical considerations: the loop centre as
+    close as possible to the object's centre of gravity (minimise moment of inertia) and
+    the loop roughly horizontal (so the object lifts up steadily)."""
     kept = [c for c in pool if c.area >= min_area]
-    if mode == "waist":
+    if mode in ("mechanical", "waist"):
         return sorted(
             kept,
             key=lambda c: waist_score(

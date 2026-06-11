@@ -155,8 +155,10 @@ def main() -> None:
                         help="r-offset (paper S_r): grow the solid by this radius (world units) to fuse thin gaps.")
     parser.add_argument("--sweep", type=int, default=0,
                         help="Sample N base points (paper Algorithm 2) and pool their loops. 0 = single source.")
-    parser.add_argument("--select", choices=["area", "small", "waist"], default="area",
-                        help="Loop ranking: area = largest (body); small = smallest non-degenerate (handle); waist = near CoG + horizontal.")
+    parser.add_argument("--select", choices=["area", "small", "mechanical", "waist"], default="area",
+                        help="Loop ranking: area = largest (body); small = smallest non-degenerate (handle); "
+                             "mechanical = paper SS II.A (loop centre near centre-of-gravity + roughly horizontal). "
+                             "'waist' is a deprecated alias for 'mechanical'.")
     parser.add_argument("--morse", action="store_true",
                         help="Use volumetric Morse-saddle loops (paper Fig.3+Thm3.1); can thread holes. Pair with --backend mesh + high --voxel-count.")
     parser.add_argument("--grasp-hull", action="store_true",
