@@ -33,6 +33,11 @@ from cagingloop.model_io import (
     transfer_point_normals,
 )
 from cagingloop.curvature import positive_curvature_points, principal_curvatures
+from cagingloop.depth import (
+    occlusion_shadow_voxelization,
+    render_depth_cloud,
+    view_dir_from_angles,
+)
 from cagingloop.morse import (
     caging_loop_space,
     detect_morse_saddles_3d,
@@ -106,6 +111,9 @@ __all__ = [
     "caging_loop_space",
     "positive_curvature_points",
     "principal_curvatures",
+    "render_depth_cloud",
+    "occlusion_shadow_voxelization",
+    "view_dir_from_angles",
     "convex_hull_grasping_mask",
     "nn_prepare",
     "nn_search",
