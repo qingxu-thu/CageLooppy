@@ -92,5 +92,23 @@ def make_camera(
     )
 
 
-def depth_to_pointclouds(depth, rgb, camera):  # implemented in Task 3
-    raise NotImplementedError
+def depth_to_pointclouds(depth: np.ndarray, rgb: np.ndarray, camera: Camera):
+    """Back-project all finite-depth pixels through the pinhole model.
+
+    Returns `(points_cam (N,3), points_world (N,3), colors (N,3) in [0,1])`.
+    Both clouds are the same visible shell; only the frame differs. World frame
+    equals the source mesh's coordinates.
+    """
+    depth = np.asarray(depth, dtype=float)
+    mask = np.isfinite(depth)
+    v, u = np.nonzero(mask)
+    z = depth[mask]
+    fx, fy = camera.K[0, 0], camera.K[1, 1]
+    cx, cy = camera.K[0, 2], camera.K[1, 2]
+    x = (u + 0.5 - cx) * z / fx  # +0.5: depth samples live at pixel centers
+    y = (v + 0.5 - cy) * z / fy
+    points_cam = np.column_stack([x, y, z])
+    R, t = camera.T[:3, :3], camera.T[:3, 3]
+    points_world = (points_cam - t) @ R  # row-wise R^T @ (p - t)
+    colors = np.asarray(rgb, dtype=float)[mask] / 255.0
+    return points_cam, points_world, colors

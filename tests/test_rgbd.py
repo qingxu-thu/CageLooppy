@@ -49,3 +49,30 @@ def test_make_camera_handles_top_down_view():
     cam = make_camera(V, 0.0, 89.0, 5.0)  # nearly parallel to world up
     R = cam.T[:3, :3]
     assert np.allclose(R @ R.T, np.eye(3), atol=1e-12)
+
+
+def test_depth_to_pointclouds_roundtrip():
+    V = np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]])
+    cam = make_camera(V, 33.0, -25.0, 4.0, width=64, height=48)
+    depth = np.full((48, 64), np.inf, dtype=np.float32)
+    depth[10:30, 20:50] = 2.5
+    rgb = np.full((48, 64, 3), 128, dtype=np.uint8)
+    p_cam, p_world, colors = depth_to_pointclouds(depth, rgb, cam)
+    assert p_cam.shape == p_world.shape == (20 * 30, 3)
+    assert colors.shape == (20 * 30, 3)
+    assert np.allclose(p_cam[:, 2], 2.5)
+    R, t = cam.T[:3, :3], cam.T[:3, 3]
+    assert np.allclose(p_world @ R.T + t, p_cam, atol=1e-9)  # frame round-trip
+    assert np.allclose(colors, 128.0 / 255.0)
+
+
+def test_depth_to_pointclouds_center_pixel_on_axis():
+    V = np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]])
+    cam = make_camera(V, 0.0, 0.0, 4.0, width=64, height=48)
+    depth = np.full((48, 64), np.inf, dtype=np.float32)
+    depth[24, 32] = 2.0  # pixel just below/right of the exact center
+    rgb = np.zeros((48, 64, 3), dtype=np.uint8)
+    p_cam, _, _ = depth_to_pointclouds(depth, rgb, cam)
+    # pixel center (32.5, 24.5) vs principal point (32, 24): offset 0.5px * z/f
+    assert np.allclose(p_cam[0, :2], 0.5 * 2.0 / cam.K[0, 0], atol=1e-9)
+    assert p_cam[0, 2] == pytest.approx(2.0)
