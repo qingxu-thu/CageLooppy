@@ -125,6 +125,9 @@ def load_mesh(path):
     return mesh
 
 
+_FILAMENT_UNAVAILABLE = False  # set on first failed probe (e.g. Windows wheels)
+
+
 def render_rgbd(mesh, camera: Camera, *, base_color=(0.7, 0.7, 0.7)):
     """One offscreen pass -> (rgb (H,W,3) uint8, depth (H,W) float32 view-space z).
 
@@ -141,9 +144,6 @@ def render_rgbd(mesh, camera: Camera, *, base_color=(0.7, 0.7, 0.7)):
         except RuntimeError:
             _FILAMENT_UNAVAILABLE = True  # probe once; don't re-log every call
     return _render_rgbd_hidden_window(o3d, mesh, camera, base_color)
-
-
-_FILAMENT_UNAVAILABLE = False
 
 
 def _render_rgbd_filament(mesh, camera: Camera, base_color):
@@ -174,6 +174,9 @@ def _render_rgbd_hidden_window(o3d, mesh, camera: Camera, base_color):
         shaded = o3d.geometry.TriangleMesh(mesh)  # copy: don't mutate the caller's mesh
         shaded.paint_uniform_color(base_color)
         vis.add_geometry(shaded)
+        # binding name quirk: MeshShadeOption.Color == smooth shading (interpolate
+        # vertex normals); the default is flat shading, which looks faceted
+        vis.get_render_option().mesh_shade_option = o3d.visualization.MeshShadeOption.Color
         params = o3d.camera.PinholeCameraParameters()
         params.intrinsic = o3d.camera.PinholeCameraIntrinsic(
             camera.width, camera.height,

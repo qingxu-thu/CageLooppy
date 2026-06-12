@@ -124,6 +124,36 @@ def test_visible_shell_only(box_capture):
     assert p_world[:, 2].min() > -0.4  # nothing from the occluded back face (z=-0.5)
 
 
+def test_render_smooth_shading(o3d):
+    from cagingloop.rgbd import render_rgbd
+
+    sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0, resolution=10)
+    sphere.compute_vertex_normals()
+    cam = make_camera(np.asarray(sphere.vertices), 0.0, 0.0, 3.0, width=320, height=240)
+
+    # flat reference: explode into per-face vertices so normals are face normals
+    V = np.asarray(sphere.vertices)
+    F = np.asarray(sphere.triangles)
+    flat = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(V[F.reshape(-1)]),
+        o3d.utility.Vector3iVector(np.arange(3 * len(F)).reshape(-1, 3)),
+    )
+    flat.compute_vertex_normals()
+
+    def p99_frontfacing_gradient(rgb, depth):
+        # front-facing pixels only (small depth gradient): smooth shading is
+        # near-constant there, while flat shading still shows facet jumps
+        gray = rgb.astype(float).mean(axis=2)
+        fin = np.isfinite(depth)
+        d = np.where(fin, depth, 0.0)
+        sel = fin[:, :-1] & fin[:, 1:] & (np.abs(np.diff(d, axis=1)) < 0.01)
+        return np.percentile(np.abs(np.diff(gray, axis=1))[sel], 99)
+
+    smooth_g = p99_frontfacing_gradient(*render_rgbd(sphere, cam))
+    flat_g = p99_frontfacing_gradient(*render_rgbd(flat, cam))
+    assert smooth_g < 0.5 * flat_g  # interpolated normals: no facet-boundary jumps
+
+
 def test_load_mesh_missing_file(o3d, tmp_path):
     from cagingloop.rgbd import load_mesh
 
