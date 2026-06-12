@@ -66,6 +66,20 @@ The primary Python workflow functions are:
 3. `detect_saddle_point`
 4. `generate_caging_grasp`
 
+### Single-view RGB-D capture (examples/render_rgbd.py)
+
+Render a model from one monocular viewpoint into RGB + depth + the visible-shell
+point cloud (camera frame and world/mesh frame). Requires open3d
+(`pip install open3d`; needs a Python version with open3d wheels, e.g. 3.10-3.12):
+
+```powershell
+python examples/render_rgbd.py Models/knotty.obj --azimuth 40 --elevation 15
+```
+
+Outputs in `out/knotty_az40_el15/`: `rgb.png`, `depth.npy` (view-space z, NaN
+background), `cloud_cam.ply`, `cloud_world.ply`, `camera.json` (K, world->camera T).
+Add `--preview` to inspect the cloud against the mesh in polyscope.
+
 ## Citation
 If you use this code, please cite the following paper.
 ```

@@ -133,11 +133,17 @@ def render_rgbd(mesh, camera: Camera, *, base_color=(0.7, 0.7, 0.7)):
     available and falls back to a hidden legacy Visualizer window elsewhere
     (Windows wheels lack EGL headless support).
     """
+    global _FILAMENT_UNAVAILABLE
     o3d = _require_open3d()
-    try:
-        return _render_rgbd_filament(mesh, camera, base_color)
-    except RuntimeError:
-        return _render_rgbd_hidden_window(o3d, mesh, camera, base_color)
+    if not _FILAMENT_UNAVAILABLE:
+        try:
+            return _render_rgbd_filament(mesh, camera, base_color)
+        except RuntimeError:
+            _FILAMENT_UNAVAILABLE = True  # probe once; don't re-log every call
+    return _render_rgbd_hidden_window(o3d, mesh, camera, base_color)
+
+
+_FILAMENT_UNAVAILABLE = False
 
 
 def _render_rgbd_filament(mesh, camera: Camera, base_color):
@@ -155,7 +161,8 @@ def _render_rgbd_filament(mesh, camera: Camera, base_color):
         camera.K.astype(np.float64), camera.T.astype(np.float64), camera.width, camera.height
     )
     rgb = np.asarray(renderer.render_to_image())[:, :, :3].copy()
-    depth = np.asarray(renderer.render_to_depth_image(z_in_view_space=True), dtype=np.float32).copy()
+    depth_img = renderer.render_to_depth_image(z_in_view_space=True)
+    depth = np.asarray(depth_img, dtype=np.float32).copy()
     return rgb, depth
 
 

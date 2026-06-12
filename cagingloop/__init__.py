@@ -38,6 +38,13 @@ from cagingloop.depth import (
     render_depth_cloud,
     view_dir_from_angles,
 )
+from cagingloop.rgbd import (
+    Camera,
+    depth_to_pointclouds,
+    load_mesh,
+    make_camera,
+    render_rgbd,
+)
 from cagingloop.morse import (
     caging_loop_space,
     detect_morse_saddles_3d,
@@ -114,6 +121,11 @@ __all__ = [
     "render_depth_cloud",
     "occlusion_shadow_voxelization",
     "view_dir_from_angles",
+    "Camera",
+    "depth_to_pointclouds",
+    "load_mesh",
+    "make_camera",
+    "render_rgbd",
     "convex_hull_grasping_mask",
     "nn_prepare",
     "nn_search",

@@ -4,3 +4,5 @@ __pycache__/
 .polyscope.ini
 imgui.ini
 *.png
+out/
+.pytest-tmp/
