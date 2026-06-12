@@ -150,6 +150,60 @@ def _count_transitions(judge: np.ndarray) -> int:
     return int(np.count_nonzero(signs != np.roll(signs, -1)))
 
 
+class SaddleTopology:
+    """Base-point-independent neighbourhood geometry for the surface saddle test.
+
+    For each surface point we cache whether it is enclosed by its tangent-plane boundary,
+    the boundary neighbours' global ids (in boundary order), and their projected 2D coords.
+    None of this depends on the distance field, so it is computed once and reused for every
+    base point — the only per-base work left is `judge = D[neighbour] - D[point]` plus the
+    (cheap) filter + transition count. Reusing the same `_filter_boundary`/`_count_transitions`
+    keeps results identical to the per-point path."""
+
+    __slots__ = ("enclosed", "bnd_ids", "bnd_pts", "k")
+
+    def __init__(self, enclosed, bnd_ids, bnd_pts, k):
+        self.enclosed = enclosed
+        self.bnd_ids = bnd_ids
+        self.bnd_pts = bnd_pts
+        self.k = k
+
+
+def build_saddle_topology(grid_on: np.ndarray, k: int = 9) -> SaddleTopology:
+    """Precompute the per-point boundary geometry used by the surface saddle test (the
+    expensive KD-tree + PCA + hull work), independent of any distance field."""
+    grid_on = _as_xyz_array(grid_on, "grid_on")
+    n = len(grid_on)
+    tree = nn_prepare(grid_on)
+    enclosed = np.zeros(n, dtype=bool)
+    bnd_ids: list = [None] * n
+    bnd_pts: list = [None] * n
+    for point_id in range(n):
+        neighbor_ids, projected = _project_neighbors(grid_on, point_id, k, tree=tree)
+        if len(projected) < 3:
+            continue
+        boundary = _boundary_order(projected)
+        boundary_points = projected[boundary]
+        if not _point_in_polygon_strict(np.array([0.0, 0.0]), boundary_points):
+            continue
+        enclosed[point_id] = True
+        bnd_ids[point_id] = neighbor_ids[boundary]
+        bnd_pts[point_id] = boundary_points
+    return SaddleTopology(enclosed, bnd_ids, bnd_pts, k)
+
+
+def _iter_num_cached(dismap: np.ndarray, topology: SaddleTopology, point_id: int) -> int:
+    """`calculate_iter_num` using cached topology — identical result, no KD-tree/PCA per call."""
+    if not topology.enclosed[point_id]:
+        return -1
+    bnd_ids = topology.bnd_ids[point_id]
+    boundary_points = topology.bnd_pts[point_id]
+    judge = dismap[bnd_ids] - dismap[point_id]
+    kept = _filter_boundary(boundary_points, np.arange(len(bnd_ids)), judge)
+    judge = dismap[bnd_ids[kept]] - dismap[point_id]
+    return _count_transitions(judge)
+
+
 def calculate_iter_num(dismap: np.ndarray, grid_on: np.ndarray, point_id: int, k: int = 9, tree=None) -> int:
     dismap = np.asarray(dismap, dtype=float)
     grid_on = _as_xyz_array(grid_on, "grid_on")
@@ -180,6 +234,7 @@ def detect_saddle_point(
     *,
     k: int = 9,
     keep: int | None = None,
+    topology: SaddleTopology | None = None,
 ) -> np.ndarray:
     dismap = np.asarray(dismap, dtype=float)
     grid_on = _as_xyz_array(grid_on, "grid_on")
@@ -191,12 +246,14 @@ def detect_saddle_point(
     if source_point_id < 0 or source_point_id >= len(grid_on):
         raise ValueError("source_point_id is outside grid_on")
 
-    # Build the KD-tree once and reuse it for every point (instead of rebuilding it
-    # per point), so saddle detection scales to high-resolution grids.
-    tree = nn_prepare(grid_on)
+    # The boundary geometry is base-point-independent, so build it once (KD-tree + PCA +
+    # hull) and reuse it for every point. Callers sweeping many base points should build
+    # the topology once and pass it in, so this work isn't repeated per base point.
+    if topology is None:
+        topology = build_saddle_topology(grid_on, k=k)
     candidates: list[int] = []
     for point_id in range(len(grid_on)):
-        if calculate_iter_num(dismap, grid_on, point_id, k=k, tree=tree) >= 4:
+        if _iter_num_cached(dismap, topology, point_id) >= 4:
             candidates.append(point_id)
     if not candidates:
         return np.zeros((0,), dtype=int)

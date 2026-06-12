@@ -31,7 +31,9 @@ from cagingloop.curvature import positive_curvature_points
 from cagingloop.morse import detect_morse_saddles_3d, volumetric_caging_loops
 from cagingloop.model_io import compute_vertex_normals, load_obj_mesh
 from cagingloop.polyscope_visualization import show_internals_polyscope
-from cagingloop.saddle import _boundary_order, _project_neighbors, calculate_iter_num
+from cagingloop import build_saddle_topology
+from cagingloop.saddle import _boundary_order, _iter_num_cached, _project_neighbors
+from cagingloop.saddle_gpu import build_saddle_topology_padded, detect_saddle_point_gpu, saddle_set_divergence
 from cagingloop.voxelization import convex_hull_grasping_mask
 
 
@@ -48,6 +50,9 @@ def main() -> None:
                          "surface = MATLAB detectSaddlePoint on the surface (tangent-ring sign flips).")
     ap.add_argument("--path-integrator", choices=["euler", "rk4"], default="euler",
                     help="Surface-method loop tracer: euler (default) or rk4 (MATLAB shortestpath parity).")
+    ap.add_argument("--gpu", action="store_true",
+                    help="Run the surface saddle test on GPU in float32 (batched). ~100x+ on the saddle "
+                         "stage; can shift a few saddles vs fp64 near ties (divergence is reported).")
     ap.add_argument("--grasp-hull", action="store_true", help="Bound the grasp space by the convex hull (Thm 3.2).")
     ap.add_argument("--curvature-filter", action="store_true", help="Seed base points from positive-curvature points (Thm 3.3).")
     ap.add_argument("--sweep", type=int, default=1, help="Number of base points to seed (each gets its own saddles).")
@@ -150,7 +155,27 @@ def main() -> None:
     npts, signs = [], []
     first_distance = None
     per_base_cap = max(args.max_loops, 50)  # generous per-base cap; global ranking decides the final set
-    for si, bid in enumerate(base_ids):
+    # Surface saddle test: the boundary geometry is base-independent — build it ONCE and
+    # reuse it for every base point (KD-tree + PCA + hull once, not per sweep point).
+    # With --gpu, also build the padded form for the batched fp32 GPU saddle test.
+    saddle_topo = saddle_padded = None
+    if args.method == "surface":
+        if args.gpu:
+            saddle_padded = build_saddle_topology_padded(go, k=9)
+            saddle_topo = saddle_padded["topo"]
+        else:
+            saddle_topo = build_saddle_topology(go, k=9)
+
+    # GPU surface fast path: GPU fp32 saddles + ONE cross-base-batched fp32 rk4 trace.
+    gpu_surface = args.method == "surface" and args.gpu
+    if gpu_surface:
+        from cagingloop.trace_gpu import sweep_surface_loops_gpu
+        pool, saddle_points, saddle_types, saddle_source, first_distance = sweep_surface_loops_gpu(
+            voxels, base_ids, normals, saddle_padded,
+            solver=args.solver, traversable_mask=mask, sweep_radius=args.sweep_radius, k=9,
+        )
+
+    for si, bid in enumerate(base_ids if not gpu_surface else []):
         d = distance_map_by_fast_marching(
             voxels, bid, solver=args.solver, traversable_mask=mask, max_distance=args.sweep_radius
         )
@@ -174,10 +199,16 @@ def main() -> None:
                             signs.append(1.0 if D[na, nb, nc] > D[a, b, c] else -1.0)
             pool.extend(volumetric_caging_loops(voxels, bid, distance=d, max_loops=per_base_cap))
         else:  # surface method: MATLAB detectSaddlePoint on the surface point cloud
-            sad_ids = detect_saddle_point(d.dismap, go, bid, normals, keep=len(go))
+            if args.gpu:
+                sad_ids = detect_saddle_point_gpu(d.dismap, go, bid, normals, padded=saddle_padded, keep=len(go))
+                if si == 0:  # one-time fp32-GPU vs fp64-CPU divergence check on the first base point
+                    cpu_ids = detect_saddle_point(d.dismap, go, bid, normals, keep=len(go), topology=saddle_topo)
+                    print("  gpu fp32 vs cpu fp64 saddle divergence:", saddle_set_divergence(cpu_ids, sad_ids))
+            else:
+                sad_ids = detect_saddle_point(d.dismap, go, bid, normals, keep=len(go), topology=saddle_topo)
             for sid in np.atleast_1d(sad_ids).astype(int):
                 saddle_points.append(go[sid])
-                saddle_types.append(float(calculate_iter_num(d.dismap, go, int(sid))))  # tangent-ring sign-flip count
+                saddle_types.append(float(_iter_num_cached(d.dismap, saddle_topo, int(sid))))  # sign-flip count
                 saddle_source.append(si)
                 if single:  # tangent-plane ring around the saddle, coloured by sign(D-neighbour - D-saddle)
                     neighbour_ids, projected = _project_neighbors(go, int(sid), 9)

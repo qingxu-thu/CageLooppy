@@ -53,6 +53,8 @@ from cagingloop.polyscope_visualization import (
     show_pipeline_polyscope,
 )
 from cagingloop.saddle import (
+    SaddleTopology,
+    build_saddle_topology,
     calculate_iter_num,
     detectSaddlePoint,
     detect_saddle_point,
@@ -78,6 +80,8 @@ __all__ = [
     "compute_shortest_path",
     "compute_shortestpath",
     "calculate_iter_num",
+    "build_saddle_topology",
+    "SaddleTopology",
     "detectSaddlePoint",
     "detect_saddle_point",
     "distance_map_by_fast_marching",

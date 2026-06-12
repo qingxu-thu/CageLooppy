@@ -504,17 +504,10 @@ def _pointmin_descent_field(distance_grid: np.ndarray) -> np.ndarray | None:
     return direction
 
 
-def _rk4_descent_path(
-    distance_grid: np.ndarray,
-    start: tuple[int, int, int],
-    source: tuple[int, int, int],
-    *,
-    step: float = 0.5,
-) -> np.ndarray | None:
-    """Trace start -> source with Runge-Kutta 4 over the pointmin descent field —
-    a port of the FastMarching toolbox `shortestpath` (Method='rk4'). Each stage's
-    increment is normalised to `step` length, exactly like rk4.c. Returns voxel-index
-    positions, or None if the trace leaves the domain or stalls before the source."""
+def build_rk4_descent(distance_grid: np.ndarray):
+    """Build the (interpolator, upper-bound) for the rk4 tracer's pointmin descent field.
+    Depends only on `distance_grid`, so callers tracing many arcs from one base point
+    should build it once and pass it to `_rk4_descent_path` rather than rebuilding per arc."""
     from scipy.interpolate import RegularGridInterpolator
 
     field = _pointmin_descent_field(distance_grid)
@@ -524,6 +517,27 @@ def _rk4_descent_path(
     upper = np.array([n - 1 for n in shape], dtype=float)
     axes = tuple(np.arange(n, dtype=float) for n in shape)
     interp = RegularGridInterpolator(axes, field, method="linear", bounds_error=False, fill_value=None)
+    return interp, upper
+
+
+def _rk4_descent_path(
+    distance_grid: np.ndarray,
+    start: tuple[int, int, int],
+    source: tuple[int, int, int],
+    *,
+    step: float = 0.5,
+    descent_cache=None,
+) -> np.ndarray | None:
+    """Trace start -> source with Runge-Kutta 4 over the pointmin descent field —
+    a port of the FastMarching toolbox `shortestpath` (Method='rk4'). Each stage's
+    increment is normalised to `step` length, exactly like rk4.c. Returns voxel-index
+    positions, or None if the trace leaves the domain or stalls before the source.
+    Pass `descent_cache` (from `build_rk4_descent`) to skip rebuilding the field per arc."""
+    built = descent_cache if descent_cache is not None else build_rk4_descent(distance_grid)
+    if built is None:
+        return None
+    interp, upper = built
+    shape = distance_grid.shape
 
     def descent(p: np.ndarray) -> np.ndarray:
         return np.asarray(interp(np.clip(p, 0.0, upper)[None])[0], dtype=float)
@@ -583,12 +597,14 @@ def compute_shortest_path(
     *,
     connectivity: int = 6,
     integrator: str = "euler",
+    descent_cache=None,
 ) -> np.ndarray:
     """Trace the caging-loop arc from `start` down to `source` through the distance
     field. `integrator='euler'` (default) uses a normalised-gradient streamline on a
     central-difference gradient; `integrator='rk4'` reproduces MATLAB's `shortestpath`
     (RK4 over the pointmin descent field). Both fall back to an integer-voxel greedy
-    descent on thin structures."""
+    descent on thin structures. `descent_cache` (from `build_rk4_descent`) lets callers
+    reuse the rk4 field across many arcs of the same distance grid."""
     if connectivity != 6:
         raise ValueError("only 6-connectivity is supported")
     if integrator not in ("euler", "rk4"):
@@ -605,7 +621,7 @@ def compute_shortest_path(
         raise ValueError("start point is not reachable")
 
     if integrator == "rk4":
-        traced = _rk4_descent_path(distance_grid, start, source)
+        traced = _rk4_descent_path(distance_grid, start, source, descent_cache=descent_cache)
     else:
         traced = _gradient_descent_path(distance_grid, start, source)
     if traced is not None:

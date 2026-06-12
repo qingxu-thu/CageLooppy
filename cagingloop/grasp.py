@@ -133,6 +133,7 @@ def generate_caging_grasp(
     *,
     k: int = 9,
     integrator: str = "euler",
+    descent_cache=None,
 ) -> CagingPath:
     if source_point_id < 0 or source_point_id >= len(voxelization.grid_on):
         raise ValueError("source_point_id is outside grid_on")
@@ -140,8 +141,8 @@ def generate_caging_grasp(
         raise ValueError("saddle_point_id is outside grid_on")
 
     cage_point_ids = get_cage_points(dismap, voxelization.grid_on, saddle_point_id, k=k)
-    path1 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[0]), source_point_id, integrator=integrator)
-    path2 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[1]), source_point_id, integrator=integrator)
+    path1 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[0]), source_point_id, integrator=integrator, descent_cache=descent_cache)
+    path2 = compute_shortest_path(distance_grid, voxelization, int(cage_point_ids[1]), source_point_id, integrator=integrator, descent_cache=descent_cache)
 
     saddle = voxelization.grid_on[saddle_point_id : saddle_point_id + 1]
     path1 = np.vstack((saddle, path1))
@@ -386,10 +387,16 @@ def generate_caging_grasps(
     """
     grid_on = voxelization.grid_on
     scale = float(np.linalg.norm(grid_on.max(axis=0) - grid_on.min(axis=0))) if len(grid_on) else 1.0
+    # The rk4 pointmin descent field depends only on `distance_grid`, so build it ONCE here
+    # and reuse it for every saddle's arcs instead of rebuilding per arc.
+    descent_cache = None
+    if integrator == "rk4":
+        from cagingloop.distance import build_rk4_descent
+        descent_cache = build_rk4_descent(np.asarray(distance_grid, dtype=float))
     candidates: list[CagingCandidate] = []
     for saddle_id in np.asarray(saddle_point_ids, dtype=int).tolist():
         try:
-            caging = generate_caging_grasp(distance_grid, voxelization, source_point_id, dismap, saddle_id, k=k, integrator=integrator)
+            caging = generate_caging_grasp(distance_grid, voxelization, source_point_id, dismap, saddle_id, k=k, integrator=integrator, descent_cache=descent_cache)
         except ValueError:
             continue
         separation = _path_separation(caging)
