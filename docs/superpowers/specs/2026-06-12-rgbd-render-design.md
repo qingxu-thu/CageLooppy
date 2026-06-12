@@ -27,7 +27,7 @@ scripts dataset batching externally (or imports the module functions).
 |---|---|
 | Purpose | Offline dataset generation |
 | Camera model | Perspective pinhole (intrinsics saved per view) |
-| Rendering backend | Open3D `OffscreenRenderer` (new optional dependency) |
+| Rendering backend | Open3D `OffscreenRenderer` (optional extra; NO Python 3.14 wheels — user installs open3d in a compatible env, tests skip when absent) |
 | Viewpoint selection | Single user-specified view per run (az/el/distance CLI args) |
 | Point cloud frames | Both: camera frame and world frame (same shell, two frames) |
 
