@@ -122,6 +122,11 @@ def load_mesh(path):
         raise ValueError(f"no triangles read from {path} (missing, empty, or unsupported file)")
     if not mesh.has_vertex_normals():
         mesh.compute_vertex_normals()
+    if not mesh.has_triangle_normals():
+        # files shipping vn normals skip compute_vertex_normals, but the legacy
+        # renderer needs triangle normals for lighting (else unlit flat output)
+        mesh.compute_triangle_normals()
+    mesh.normalize_normals()  # some Models/*Normal.obj store non-unit normals
     return mesh
 
 

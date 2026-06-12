@@ -161,6 +161,24 @@ def test_load_mesh_missing_file(o3d, tmp_path):
         load_mesh(tmp_path / "nothing.obj")
 
 
+def test_load_mesh_with_file_normals_is_renderable(o3d, tmp_path):
+    """OBJ files shipping vn normals (Models/*Normal.obj) must still get
+    triangle normals and unit vertex normals, or the legacy renderer
+    silently produces unlit flat-gray output."""
+    from cagingloop.rgbd import load_mesh
+
+    obj = tmp_path / "tri_with_vn.obj"
+    obj.write_text(
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+        "vn 0 0 5\nvn 0 0 5\nvn 0 0 5\n"  # non-unit, like Models/kittenNormal.obj
+        "f 1//1 2//2 3//3\n"
+    )
+    mesh = load_mesh(obj)
+    assert mesh.has_triangle_normals()
+    lengths = np.linalg.norm(np.asarray(mesh.vertex_normals), axis=1)
+    assert np.allclose(lengths, 1.0, atol=1e-6)
+
+
 def test_cli_smoke(o3d, tmp_path):
     root = Path(__file__).resolve().parents[1]
     out = tmp_path / "view"
