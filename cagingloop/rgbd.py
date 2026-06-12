@@ -112,3 +112,75 @@ def depth_to_pointclouds(depth: np.ndarray, rgb: np.ndarray, camera: Camera):
     points_world = (points_cam - t) @ R  # row-wise R^T @ (p - t)
     colors = np.asarray(rgb, dtype=float)[mask] / 255.0
     return points_cam, points_world, colors
+
+
+def load_mesh(path):
+    """Read an .obj/.stl/.ply triangle mesh via Open3D; ensure vertex normals."""
+    o3d = _require_open3d()
+    mesh = o3d.io.read_triangle_mesh(str(path))
+    if len(mesh.triangles) == 0:
+        raise ValueError(f"no triangles read from {path} (missing, empty, or unsupported file)")
+    if not mesh.has_vertex_normals():
+        mesh.compute_vertex_normals()
+    return mesh
+
+
+def render_rgbd(mesh, camera: Camera, *, base_color=(0.7, 0.7, 0.7)):
+    """One offscreen pass -> (rgb (H,W,3) uint8, depth (H,W) float32 view-space z).
+
+    Background pixels have depth inf. The untextured mesh is shaded with a
+    uniform Lambertian material. Uses the Filament OffscreenRenderer where
+    available and falls back to a hidden legacy Visualizer window elsewhere
+    (Windows wheels lack EGL headless support).
+    """
+    o3d = _require_open3d()
+    try:
+        return _render_rgbd_filament(mesh, camera, base_color)
+    except RuntimeError:
+        return _render_rgbd_hidden_window(o3d, mesh, camera, base_color)
+
+
+def _render_rgbd_filament(mesh, camera: Camera, base_color):
+    from open3d.visualization import rendering
+
+    renderer = rendering.OffscreenRenderer(camera.width, camera.height)
+    mat = rendering.MaterialRecord()
+    mat.shader = "defaultLit"
+    mat.base_color = (*base_color, 1.0)
+    renderer.scene.set_background([1.0, 1.0, 1.0, 1.0])
+    renderer.scene.add_geometry("object", mesh, mat)
+    sun_dir = camera.T[2, :3]  # camera forward in world: headlight-style sun
+    renderer.scene.set_lighting(rendering.Open3DScene.LightingProfile.NO_SHADOWS, sun_dir)
+    renderer.setup_camera(
+        camera.K.astype(np.float64), camera.T.astype(np.float64), camera.width, camera.height
+    )
+    rgb = np.asarray(renderer.render_to_image())[:, :, :3].copy()
+    depth = np.asarray(renderer.render_to_depth_image(z_in_view_space=True), dtype=np.float32).copy()
+    return rgb, depth
+
+
+def _render_rgbd_hidden_window(o3d, mesh, camera: Camera, base_color):
+    vis = o3d.visualization.Visualizer()
+    if not vis.create_window(width=camera.width, height=camera.height, visible=False):
+        raise RuntimeError("open3d could not create a hidden render window")
+    try:
+        shaded = o3d.geometry.TriangleMesh(mesh)  # copy: don't mutate the caller's mesh
+        shaded.paint_uniform_color(base_color)
+        vis.add_geometry(shaded)
+        params = o3d.camera.PinholeCameraParameters()
+        params.intrinsic = o3d.camera.PinholeCameraIntrinsic(
+            camera.width, camera.height,
+            camera.K[0, 0], camera.K[1, 1], camera.K[0, 2], camera.K[1, 2],
+        )
+        params.extrinsic = camera.T
+        if not vis.get_view_control().convert_from_pinhole_camera_parameters(
+            params, allow_arbitrary=True
+        ):
+            raise RuntimeError("open3d rejected the pinhole camera parameters")
+        rgb_f = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+        rgb = np.clip(np.round(rgb_f * 255.0), 0, 255).astype(np.uint8)
+        depth = np.asarray(vis.capture_depth_float_buffer(do_render=True), dtype=np.float32).copy()
+        depth[depth <= 0.0] = np.inf  # legacy buffer marks background as 0
+    finally:
+        vis.destroy_window()
+    return rgb, depth
