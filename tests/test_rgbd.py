@@ -129,3 +129,24 @@ def test_load_mesh_missing_file(o3d, tmp_path):
 
     with pytest.raises(ValueError, match="no triangles"):
         load_mesh(tmp_path / "nothing.obj")
+
+
+def test_cli_smoke(o3d, tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    out = tmp_path / "view"
+    r = subprocess.run(
+        [sys.executable, "examples/render_rgbd.py", "Models/torus.obj",
+         "--azimuth", "30", "--elevation", "20", "--out", str(out)],
+        cwd=root, capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    for name in ["rgb.png", "depth.npy", "cloud_cam.ply", "cloud_world.ply", "camera.json"]:
+        assert (out / name).exists(), name
+    meta = json.loads((out / "camera.json").read_text())
+    assert {"K", "T_world_to_cam", "width", "height", "fov_deg",
+            "azimuth_deg", "elevation_deg", "distance", "model"} <= set(meta)
+    assert np.array(meta["K"]).shape == (3, 3)
+    assert np.array(meta["T_world_to_cam"]).shape == (4, 4)
+    depth = np.load(out / "depth.npy")
+    assert depth.shape == (480, 640)
+    assert np.isnan(depth).any() and np.isfinite(depth).any()
